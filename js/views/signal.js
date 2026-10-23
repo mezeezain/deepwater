@@ -2,6 +2,8 @@
 import { getCatcher } from '../catcher-app.js';
 import { demoSignalCandles } from '../demo-market.js';
 import { priceChart } from '../chart.js';
+import { getChartData } from '../api.js';
+import { marketLayers, whaleLayers, liquidationLevels, setupCheck } from '../indicators.js';
 import { h, ticker, fmtPrice, fmtPct, signClass } from '../util.js';
 import { fmtDuration, fmtDip } from './pumps.js';
 
@@ -14,6 +16,7 @@ export function signalView(root, { id, go }) {
   const chartBox = h('div.chart');
   const why = h('div.facts');
   const life = h('div.facts');
+  const checks = h('div.checks-list', h('p.loading', 'Checking order flow…'));
 
   root.replaceChildren(
     h('button.back', { onclick: () => go('pumps') }, '← Pump catcher'),
@@ -24,7 +27,23 @@ export function signalView(root, { id, go }) {
         h('div.legend', h('span.key.alert', 'Alert price'), h('span.key.peak', 'Peak'), h('span.key.dip', 'Dip before peak'))),
       h('aside.panel.side', h('h2', 'Why it fired'), why, h('h2', 'Lifecycle'), life),
     ),
+    h('section.panel', h('h2', 'Setup check now'), h('p.note', 'Order flow and positioning over the last hour (12 five-minute candles).'), checks),
   );
+
+  async function loadChecks(symbol) {
+    try {
+      const raw = await getChartData(symbol, '5m', 150);
+      if (!alive) return;
+      const market = marketLayers(raw.bars);
+      const items = setupCheck(raw.bars, market, whaleLayers(raw.bars), { levels: liquidationLevels(raw.bars, market).active });
+      const icon = { good: '✓', warn: '!', bad: '✕', na: '–' };
+      checks.replaceChildren(...(items.length
+        ? items.map((it) => h(`div.check-item.${it.state}`, h('span.check-icon', { 'aria-hidden': 'true' }, icon[it.state]), h('div', h('strong', it.label), h('p', it.detail))))
+        : [h('p.empty', 'Not enough data for a setup check.')]));
+    } catch (e) {
+      checks.replaceChildren(h('p.empty', `Setup check unavailable: ${e.message}`));
+    }
+  }
 
   getCatcher().then(async (catcher) => {
     if (!alive) return;
@@ -33,6 +52,7 @@ export function signalView(root, { id, go }) {
       head.replaceChildren(h('p.error', 'This signal is no longer in your 30-day log. It may have been recorded in another browser.'));
       return;
     }
+    loadChecks(sig.symbol);
     const paint = () => {
       const nowChg = ((sig.lastPrice - sig.alertPrice) / sig.alertPrice) * 100;
       head.replaceChildren(

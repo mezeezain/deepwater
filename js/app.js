@@ -1,10 +1,11 @@
 // App shell: navigation, routing by #hash, live/demo status.
 import { status, ensureMode, setDemo } from './api.js';
-import { h, $ } from './util.js';
+import { h, $, store } from './util.js';
 import { whalesView } from './views/whales.js';
 import { tokenView } from './views/token.js';
 import { pumpsView } from './views/pumps.js';
 import { signalView } from './views/signal.js';
+import { liqmapView } from './views/liqmap.js';
 import { fundingView } from './views/funding.js';
 import { liquidationsView } from './views/liquidations.js';
 import { heatmapView } from './views/heatmap.js';
@@ -13,6 +14,8 @@ import { calculatorView } from './views/calculator.js';
 const ROUTES = {
   whales: { label: 'Whales', view: whalesView },
   pumps: { label: 'Pump catcher', view: pumpsView },
+  charts: { label: 'Charts', view: (root, ctx) => tokenView(root, { ...ctx, symbol: store.get('last-pair', 'BTCUSDT') }) },
+  liqmap: { label: 'Liq map', view: liqmapView },
   liquidations: { label: 'Liquidations', view: liquidationsView },
   heatmap: { label: 'Heatmap', view: heatmapView },
   funding: { label: 'Funding', view: fundingView },
@@ -29,12 +32,13 @@ function parse() {
   const token = decodeURIComponent(location.hash.slice(1));
   if (ROUTES[token]) return { route: token };
   if (token.startsWith('sig-')) return { route: 'signal', id: token.slice(4) };
+  if (token.startsWith('liqmap-')) return { route: 'liqmap', symbol: token.slice(7) };
   if (/^[A-Z0-9\u4e00-\u9fff]+USDT$/.test(token)) return { route: 'token', symbol: token };
   return { route: 'whales' };
 }
 
 export function go(route, arg) {
-  const hash = route === 'token' ? arg : route === 'signal' ? `sig-${arg}` : route;
+  const hash = route === 'token' ? arg : route === 'signal' ? `sig-${arg}` : route === 'liqmap' && arg ? `liqmap-${arg}` : route;
   if (location.hash.slice(1) === hash) render();
   else location.hash = hash;
 }
@@ -43,12 +47,13 @@ function render() {
   const { route, symbol, id } = parse();
   dispose();
   window.scrollTo(0, 0);
-  const navRoute = route === 'signal' ? 'pumps' : route;
+  const navRoute = route === 'signal' ? 'pumps' : route === 'token' ? 'charts' : route;
   nav.querySelectorAll('a').forEach((a) => a.setAttribute('aria-current', a.dataset.route === navRoute ? 'page' : 'false'));
   const view = route === 'token' ? tokenView : route === 'signal' ? signalView : ROUTES[route].view;
   dispose = view(main, { symbol, id, go }) || (() => {});
   document.title =
     route === 'token' ? `${symbol.replace(/USDT$/, '')} · Deepwater`
+    : route === 'liqmap' && symbol ? `${symbol.replace(/USDT$/, '')} liquidation map · Deepwater`
     : route === 'signal' ? `${id.split('-')[0].replace(/USDT$/, '')} signal · Deepwater`
     : `Deepwater · ${ROUTES[route].label}`;
 }

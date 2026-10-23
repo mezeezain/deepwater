@@ -111,3 +111,65 @@ export function liquidation() {
   const usd = 500 + liqRand() ** 4 * 400_000;
   return { symbol, side: liqRand() > 0.45 ? 'long' : 'short', price: base, qty: usd / base, usd, t: Date.now() };
 }
+
+/**
+ * Demo bars for the indicator chart: quiet accumulation, a squeeze, then a pullback,
+ * so every indicator has something to show. Values are invented.
+ */
+export function chartData(symbol, interval, limit) {
+  const base = (COINS.find((c) => c[0] === symbol) || [symbol, 1])[1];
+  const step = { '5m': 300_000, '15m': 900_000, '1h': HOUR, '4h': 4 * HOUR, '1d': 24 * HOUR }[interval] || HOUR;
+  const r = rng('chart' + symbol + interval);
+  const now = Math.floor(Date.now() / step) * step;
+  const n = Math.min(limit, 500);
+  let price = base * 0.92;
+  let oi = (2e8 / base) * (0.6 + r());
+  let whale = 0.45;
+  let crowd = 0.55;
+  const bars = [];
+  for (let i = 0; i < n; i++) {
+    const phase = i / n;
+    // 0–55%: drift with sellers absorbed; 55–75%: squeeze; 75–100%: cool-off.
+    const trend = phase < 0.55 ? 0.0002 : phase < 0.75 ? 0.006 : -0.0015;
+    const ret = trend + (r() - 0.5) * 0.012;
+    const o = price;
+    const c = o * (1 + ret);
+    const h = Math.max(o, c) * (1 + r() * 0.005);
+    const l = Math.min(o, c) * (1 - r() * 0.005);
+    const v = base * oi * 0.002 * (0.6 + r() * 0.8) * (phase > 0.55 && phase < 0.75 ? 2.5 : 1) / base;
+    const buyShare = Math.min(0.85, Math.max(0.15, 0.5 + ret * 25 + (phase < 0.55 ? -0.06 : 0) + (r() - 0.5) * 0.1));
+    oi *= 1 + (phase < 0.55 ? 0.0015 : phase < 0.75 ? (r() < 0.3 ? -0.01 : 0.004) : -0.002) + (r() - 0.5) * 0.004;
+    whale = Math.min(0.85, Math.max(0.2, whale + (phase < 0.6 ? 0.002 : -0.001) + (r() - 0.5) * 0.01));
+    crowd = Math.min(0.8, Math.max(0.2, crowd + (phase < 0.55 ? -0.0015 : 0.002) + (r() - 0.5) * 0.008));
+    bars.push({
+      t: now - (n - 1 - i) * step, o, h, l, c, v: v * c, takerBuy: v * c * buyShare, oi,
+      whaleLong: whale, smartLong: Math.min(0.9, Math.max(0.1, whale + (r() - 0.5) * 0.1)), crowdLong: crowd,
+    });
+    price = c;
+  }
+  // End on the same price the rest of the demo shows for this pair.
+  const live = market().find((m) => m.symbol === symbol);
+  const k = live ? live.price / bars[bars.length - 1].c : 1;
+  for (const b of bars) {
+    b.o *= k; b.h *= k; b.l *= k; b.c *= k;
+    b.oi /= k; // keep open interest value unchanged
+  }
+  return {
+    bars,
+    funding: fundingHistory(symbol, 90),
+    listedAt: now - (200 + Math.floor(r() * 600)) * 24 * HOUR,
+  };
+}
+
+export function depth(symbol) {
+  const mid = (market().find((m) => m.symbol === symbol) || { price: 100 }).price;
+  const r = rng('depth' + symbol + Math.floor(Date.now() / 15_000));
+  const tick = mid * 0.0005;
+  const side = (dir) => Array.from({ length: 400 }, (_, i) => {
+    const p = mid + dir * (i + 1) * tick;
+    let q = (2e4 / mid) * (0.3 + r()) * (1 + i / 200);
+    if (r() < 0.012) q *= 8 + r() * 12; // occasional wall
+    return [p.toPrecision(8), q.toFixed(4)];
+  });
+  return { bids: side(-1), asks: side(1) };
+}

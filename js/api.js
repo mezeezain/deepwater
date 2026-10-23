@@ -151,6 +151,72 @@ export async function getCandles(symbol, interval = '1h', limit = 120) {
   return rows.map((k) => ({ t: k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[7] }));
 }
 
+export const CHART_INTERVALS = { '5m': 300_000, '15m': 900_000, '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000 };
+
+/**
+ * Everything the indicator chart needs, aligned to one row per candle:
+ * { t, o, h, l, c, v, takerBuy, oi, whaleLong, smartLong, crowdLong }
+ * plus funding history and the pair's Binance futures listing date.
+ * Binance keeps positioning history for 30 days and returns at most 500 rows.
+ */
+export async function getChartData(symbol, interval = '1h', limit = 300) {
+  if (await isDemo()) return demo.chartData(symbol, interval, limit);
+  const ms = CHART_INTERVALS[interval];
+  const n = Math.min(limit, 500, Math.floor((30 * 86_400_000) / ms) - 1);
+  const p = { symbol, period: interval, limit: n };
+  const optional = (promise) => promise.catch(() => []);
+  const [klines, oi, whales, smart, crowd, funding, info] = await Promise.all([
+    get('/fapi/v1/klines', { symbol, interval, limit: n }, 30_000),
+    optional(get('/futures/data/openInterestHist', p, 60_000)),
+    optional(get('/futures/data/topLongShortPositionRatio', p, 60_000)),
+    optional(get('/futures/data/topLongShortAccountRatio', p, 60_000)),
+    optional(get('/futures/data/globalLongShortAccountRatio', p, 60_000)),
+    optional(get('/fapi/v1/fundingRate', { symbol, limit: 200 }, 5 * 60_000)),
+    get('/fapi/v1/exchangeInfo', {}, 10 * 60_000),
+  ]);
+  // Positioning rows are snapshots taken at the end of each period: map them to the candle they close.
+  const slot = (ts) => Math.floor((+ts - 1) / ms) * ms;
+  const index = (rows, field) => new Map(rows.map((r) => [slot(r.timestamp), +r[field]]));
+  const oiBy = index(oi, 'sumOpenInterest');
+  const wBy = index(whales, 'longAccount');
+  const sBy = index(smart, 'longAccount');
+  const cBy = index(crowd, 'longAccount');
+  const bars = klines.map((k) => ({
+    t: k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[7], takerBuy: +k[10],
+    oi: oiBy.get(k[0]) ?? null,
+    whaleLong: wBy.get(k[0]) ?? null,
+    smartLong: sBy.get(k[0]) ?? null,
+    crowdLong: cBy.get(k[0]) ?? null,
+  }));
+  fillGaps(bars, ['oi', 'whaleLong', 'smartLong', 'crowdLong']);
+  const meta = info.symbols.find((x) => x.symbol === symbol);
+  return {
+    bars,
+    funding: funding.map((r) => ({ t: +r.fundingTime, rate: +r.fundingRate })),
+    listedAt: meta?.onboardDate ?? null,
+  };
+}
+
+/** Carry the last known value forward over short gaps (the newest candle often has no snapshot yet). */
+function fillGaps(bars, fields) {
+  for (const f of fields) {
+    let last = null;
+    let run = 0;
+    for (const b of bars) {
+      if (b[f] != null) {
+        last = b[f];
+        run = 0;
+      } else if (last != null && ++run <= 2) b[f] = last;
+    }
+  }
+}
+
+/** Order book snapshot: { bids: [[price, qty]], asks: [[price, qty]] } */
+export async function getDepth(symbol) {
+  if (await isDemo()) return demo.depth(symbol);
+  return get('/fapi/v1/depth', { symbol, limit: 1000 }, 10_000);
+}
+
 export async function getFundingHistory(symbol, limit = 30) {
   if (await isDemo()) return demo.fundingHistory(symbol, limit);
   const rows = await get('/fapi/v1/fundingRate', { symbol, limit }, 5 * 60_000);

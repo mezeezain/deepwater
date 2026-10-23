@@ -21,13 +21,40 @@ Add `?demo` to the URL to use a simulated market. The app also switches to demo 
 | Screen | Route | What it does |
 |---|---|---|
 | Whales vs crowd | `#whales` | Top traders' long share against all accounts for the 60 most traded pairs. Rankings for biggest gap, whales most long/short, biggest 24h shift and **contrarian setups** (whales against a lopsided crowd). Sortable, filterable, watchlist (★), copy as CSV |
-| Pair page | `#SOLUSDT` | Candles with whale and crowd long-share lines, markers on big whale moves, open interest, whale move log, 10 days of funding |
+| Pair page | `#SOLUSDT` | Indicator chart (5m–1d) with selectable layers, a four-point setup check, biggest whale moves and funding. See "Chart layers" |
+| Charts | `#charts` | The pair page for the last pair you opened |
+| Liquidation map | `#liqmap-SOLUSDT` | Estimated liquidation levels over time, cleared when a wick trades through them, with the live order book, walls (size vs typical, how long they've rested) and whale entry estimates |
 | Pump catcher | `#pumps` | Scans every USDT perpetual every 5 seconds, fires alerts and tracks each one until the move ends (see below) |
 | Signal page | `#sig-<pair>-<time>` | Chart around one alert with alert, peak and dip lines, why it fired, and how it closed |
 | Liquidations | `#liquidations` | Live forced liquidations by pair, long vs short |
 | Heatmap | `#heatmap` | Pairs sized by volume, coloured by 24h change or funding |
 | Funding | `#funding` | Every pair's funding, yearly equivalent, time to next payment |
 | Calculator | `#calculator` | Profit after fees, return on margin, break-even and estimated liquidation price |
+
+## Chart layers
+
+Price is treated as the result; positioning and order flow are what move it. Toggle any of these on the pair page (choices are remembered):
+
+| Layer | How it's calculated |
+|---|---|
+| Whales vs crowd | Top traders' long share (by position) vs all accounts. Falls back to top accounts when position data is missing |
+| Whale moves (est.) | Change in estimated whale net exposure: top-trader long share × open interest. Grey dots mark a share jump with flat open interest, which is likely a change in who ranks as a top trader, not a trade, so it is left out |
+| Whale opens (est.) | Only the increase in whale long or short exposure; closures are excluded, so short covering doesn't look like buying |
+| Whale net position (est.) | Estimated whale longs minus shorts |
+| Whale entry lines (est.) | Price weighted by estimated whale opens in the window, for longs and shorts |
+| Net longs / shorts (est.) | Each candle's open interest change, assigned by the aggressive side: OI up + net buying = longs opened, OI up + net selling = shorts opened, OI down + net buying = shorts closed, OI down + net selling = longs closed |
+| CVD | Running sum of taker buy minus taker sell volume |
+| Open interest | Open contracts valued in USDT |
+| Liquidations (est.) | Open interest drops at least 2× the usual change, on a candle at least 1.5× the usual range, with one-sided taker flow |
+| Funding, Volume | Funding rate per 8h; taker buy and sell volume |
+| Absorption dots | Taker flow more than 20% one-sided while price moved under 0.15%: someone was absorbing it with limit orders |
+| Listing marker | Date the pair was listed on Binance futures, if it falls in the window |
+
+**Setup check** answers four questions from the last 12 candles: is the move driven by new longs or by short covering, are whales opening longs, is the crowd on the wrong side, and is price near the whale entry with liquidations stacked overhead. It also appears on each pump signal's page.
+
+**Liquidation map:** each candle's estimated new longs or shorts are spread across 10×, 25×, 50× and 100× leverage (35/30/20/15%). Long liquidation price ≈ entry × (1 − 1/leverage + 0.5%), and short ≈ entry × (1 + 1/leverage − 0.5%). Levels are grouped into 0.25% price buckets and removed once a candle trades through them. The order book refreshes every 15 seconds while the page is open.
+
+Everything marked *est.* is an estimate: Binance publishes ratios and totals, not individual positions or entry prices.
 
 ## Pump catcher
 
@@ -77,7 +104,10 @@ These cover the gates, order-flow maths, rise and dip accounting (including that
 ## Limits
 
 - **"Whales"** are Binance's top traders by position size (`topLongShortPositionRatio`). Binance doesn't publish trader counts or profitability, so there's no fallback for pairs with few whales.
-- **Per-trader PnL** isn't published by Binance, so it isn't shown.
+- **Per-trader PnL, whale dollar positions and entry prices** aren't published by Binance. Whale amounts and entries are estimated from the top-trader ratio and open interest.
+- **Positioning history** (open interest, long/short ratios) only goes back 30 days and isn't available at the weekly interval.
+- **Order book history** isn't available from Binance, so walls are tracked only while the map is open.
+- **Not included:** listings on other exchanges (no free data source) and chart drawing tools.
 - **Rise and dip** in the browser are measured from live prices about once a second. Brief wicks between updates can be missed, except during catch-up, which uses candle highs and lows.
 
 ## Code layout
@@ -86,6 +116,8 @@ These cover the gates, order-flow maths, rise and dip accounting (including that
 index.html              shell: top bar, status strip, <main>
 css/app.css             theme tokens (light + dark) and all component styles
 js/engine.js            pump catcher rules: pure functions, shared by browser and worker
+js/indicators.js        chart layers, liquidation levels, order book walls, setup check (pure functions)
+js/multichart.js        stacked canvas chart: candles plus indicator panes, shared crosshair
 js/catcher.js           scanner loop: ticker stream, screening, confirmation, tracking
 js/binance.js           Binance source for the catcher (fetch + WebSocket only)
 js/demo-market.js       simulated market with the same interface
@@ -97,7 +129,7 @@ js/chart.js             canvas candle chart with share overlays and level lines;
 js/app.js               hash router and navigation
 js/views/*.js           one file per screen; each returns a cleanup function
 worker/catcher.mjs      Node worker with Telegram alerts
-test/engine.test.mjs    engine tests (node --test)
+test/*.test.mjs         engine and indicator tests (node --test)
 ```
 
 ## Moving it into your own app
@@ -117,6 +149,8 @@ test/engine.test.mjs    engine tests (node --test)
 | Top accounts | `GET /futures/data/topLongShortAccountRatio` |
 | Crowd (all accounts) | `GET /futures/data/globalLongShortAccountRatio` |
 | Open interest | `GET /futures/data/openInterestHist` |
+| Order book | `GET /fapi/v1/depth` |
+| Listing date | `onboardDate` in `GET /fapi/v1/exchangeInfo` |
 | Liquidations (live) | stream `!forceOrder@arr` |
 
 Not financial advice.
