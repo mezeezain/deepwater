@@ -2,11 +2,11 @@
 // Redraws on resize and theme change. No dependencies.
 import { cssVar, fmtPrice } from './util.js';
 
-export function priceChart(container, { candles, overlays = [], markers = [] }) {
+export function priceChart(container, { candles, overlays = [], markers = [], levels = [], label = 'Price chart with whale and crowd long share' }) {
   const canvas = document.createElement('canvas');
   canvas.className = 'chart-canvas';
   canvas.setAttribute('role', 'img');
-  canvas.setAttribute('aria-label', 'Price chart with whale and crowd long share');
+  canvas.setAttribute('aria-label', label);
   container.replaceChildren(canvas);
   const tip = document.createElement('div');
   tip.className = 'chart-tip';
@@ -45,8 +45,8 @@ export function priceChart(container, { candles, overlays = [], markers = [] }) 
     const bw = plotW / n;
     const x = (i) => 8 + i * bw + bw / 2;
 
-    const hi = Math.max(...candles.map((k) => k.h));
-    const lo = Math.min(...candles.map((k) => k.l));
+    const hi = Math.max(...candles.map((k) => k.h), ...levels.map((l) => l.price));
+    const lo = Math.min(...candles.map((k) => k.l), ...levels.map((l) => l.price));
     const pad = (hi - lo) * 0.06 || hi * 0.01;
     const y = (p) => top + ((hi + pad - p) / (hi - lo + 2 * pad)) * priceH;
 
@@ -102,6 +102,24 @@ export function priceChart(container, { candles, overlays = [], markers = [] }) 
       ctx.lineTo(x(i) - 5, up ? my + 3 : my - 3);
       ctx.lineTo(x(i) + 5, up ? my + 3 : my - 3);
       ctx.fill();
+    }
+
+    // Horizontal levels (alert price, peak, …) with a label at the left edge
+    for (const lv of levels) {
+      const ly2 = Math.round(y(lv.price)) + 0.5;
+      ctx.strokeStyle = cssVar(lv.color || '--accent');
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(8, ly2);
+      ctx.lineTo(8 + plotW, ly2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const text = `${lv.label} ${fmtPrice(lv.price)}`;
+      const tw = ctx.measureText(text).width + 10;
+      ctx.fillStyle = cssVar('--surface');
+      ctx.fillRect(10, ly2 - 9, tw, 18);
+      ctx.fillStyle = cssVar(lv.color || '--accent');
+      ctx.fillText(text, 15, ly2);
     }
 
     // Lower pane: long share lines (0–100%)

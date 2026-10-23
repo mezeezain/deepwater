@@ -47,7 +47,7 @@ function pump() {
   }
 }
 
-async function get(path, params = {}, ttl = CACHE_MS) {
+export async function get(path, params = {}, ttl = CACHE_MS) {
   const qs = new URLSearchParams(params).toString();
   const url = `${BASE}${path}${qs ? `?${qs}` : ''}`;
   const hit = cache.get(url);
@@ -87,7 +87,7 @@ export function ensureMode() {
   return modePromise;
 }
 
-const isDemo = async () => (await ensureMode()) === 'demo';
+export const isDemo = async () => (await ensureMode()) === 'demo';
 
 /** All perpetual USDT pairs that are trading, with price, 24h stats and funding. */
 export async function getMarket() {
