@@ -9,8 +9,9 @@ export function h(tag, props, ...children) {
   const el = document.createElement(name || 'div');
   if (id) el.id = id;
   if (classes.length) el.className = classes.join(' ');
-  if (props && (typeof props !== 'object' || props instanceof Node || Array.isArray(props))) {
-    children.unshift(props);
+  // Only a plain object is options; anything else (text, numbers including 0, nodes, arrays) is a child.
+  if (props == null || typeof props !== 'object' || props instanceof Node || Array.isArray(props)) {
+    if (props != null) children.unshift(props);
     props = null;
   }
   for (const [k, v] of Object.entries(props || {})) {

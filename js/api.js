@@ -1,6 +1,8 @@
 // Binance USDⓈ-M futures public data, with caching, a request queue and a demo fallback.
 // Every endpoint used here is public and needs no API key.
 import * as demo from './demo.js';
+import { demoSnapshots } from './smartmoney-demo.js';
+import { pickCohort, summarize } from './smartmoney.js';
 
 const BASE = 'https://fapi.binance.com';
 const CACHE_MS = 60_000;
@@ -209,6 +211,90 @@ function fillGaps(bars, fields) {
       } else if (last != null && ++run <= 2) b[f] = last;
     }
   }
+}
+
+// ---------------------------------------------------------------- exact whale data (whale data server)
+// Binance's Smart Money numbers (whale headcount, position value, average entry, unrealized PnL) come
+// from its website API, which browsers can't call from another site. worker/smartmoney.mjs polls it and
+// serves the results; the app reads them from the address saved here.
+
+export const whaleServer = {
+  get() {
+    try {
+      return localStorage.getItem('dw:whale-server') || '';
+    } catch {
+      return '';
+    }
+  },
+  set(url) {
+    try {
+      localStorage.setItem('dw:whale-server', url.replace(/\/+$/, ''));
+    } catch {}
+    cache.clear();
+  },
+};
+
+async function fromServer(path, ttl) {
+  const base = whaleServer.get();
+  if (!base) return null;
+  const url = base + path;
+  const hit = cache.get(url);
+  if (hit && Date.now() - hit.at < ttl) return hit.data;
+  const res = await fetch(url);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Whale data server returned HTTP ${res.status}`);
+  const data = await res.json();
+  cache.set(url, { at: Date.now(), data });
+  return data;
+}
+
+/** Check a whale data server address. Returns its health report or throws a readable error. */
+export async function testWhaleServer(url) {
+  let res;
+  try {
+    res = await fetch(url.replace(/\/+$/, '') + '/api/health');
+  } catch {
+    throw new Error('Could not reach that address. Check the URL, that the server is running, and that it allows requests from this site (ALLOW_ORIGIN).');
+  }
+  if (!res.ok) throw new Error(`The server answered HTTP ${res.status}. Is this the whale data server?`);
+  return res.json();
+}
+
+function demoHistoryFor(symbol) {
+  const { bars } = demo.chartData(symbol, '5m', 500);
+  return demoSnapshots(symbol, bars, (b) => b.oi * b.c);
+}
+
+/**
+ * Latest exact whale numbers for every pair the server tracks.
+ * Returns { source: 'server' | 'demo', rows: Map(symbol -> row) } or null when no server is set.
+ * row: { symbol, t, cohort, shown, whale, smart } where shown/whale/smart come from summarize().
+ */
+export async function getSmartOverview() {
+  if (await isDemo()) {
+    const key = 'demo-smart-overview';
+    const hit = cache.get(key);
+    if (hit && Date.now() - hit.at < 60_000) return hit.data;
+    const rows = new Map();
+    for (const m of demo.market()) {
+      const s = demoHistoryFor(m.symbol).at(-1);
+      const cohort = pickCohort(s);
+      rows.set(m.symbol, { symbol: m.symbol, t: s.t, cohort, shown: summarize(s, cohort, s.oiUsd), whale: summarize(s, 'whale', s.oiUsd), smart: summarize(s, 'smart', s.oiUsd) });
+    }
+    const data = { source: 'demo', rows };
+    cache.set(key, { at: Date.now(), data });
+    return data;
+  }
+  const body = await fromServer('/api/overview', 60_000);
+  if (!body) return null;
+  return { source: 'server', rows: new Map(body.rows.map((r) => [r.symbol, r])) };
+}
+
+/** Snapshot history for one pair (oldest first), or null when unavailable. */
+export async function getSmartHistory(symbol) {
+  if (await isDemo()) return { source: 'demo', snapshots: demoHistoryFor(symbol) };
+  const body = await fromServer(`/api/symbol/${encodeURIComponent(symbol)}`, 60_000);
+  return body ? { source: 'server', snapshots: body.snapshots } : null;
 }
 
 /** Order book snapshot: { bids: [[price, qty]], asks: [[price, qty]] } */

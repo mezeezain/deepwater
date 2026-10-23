@@ -220,7 +220,7 @@ function median(arr) {
  * Setup check: four questions to ask before trusting a move, answered from the last `lookback` bars.
  * Each item: { id, label, state: 'good' | 'warn' | 'bad' | 'na', detail }
  */
-export function setupCheck(bars, market, whales, { lookback = 12, levels = [] } = {}) {
+export function setupCheck(bars, market, whales, { lookback = 12, levels = [], entries: entriesIn = null, whaleShare = null } = {}) {
   const n = bars.length;
   if (n < lookback + 1) return [];
   const from = n - 1 - lookback;
@@ -249,29 +249,29 @@ export function setupCheck(bars, market, whales, { lookback = 12, levels = [] } 
     const opensL = recent.reduce((s, w) => s + w.opensLong, 0);
     const opensS = recent.reduce((s, w) => s + w.opensShort, 0);
     const state = opensL > opensS * 1.2 ? 'good' : opensS > opensL * 1.2 ? 'bad' : 'warn';
-    items.push({ id: 'whales', label: state === 'good' ? 'Whales are opening longs' : state === 'bad' ? 'Whales are opening shorts' : 'Whale opens are balanced', state, detail: `Estimated whale opens: longs ${usd(opensL)}, shorts ${usd(opensS)}.` });
+    items.push({ id: 'whales', label: state === 'good' ? 'Whales are opening longs' : state === 'bad' ? 'Whales are opening shorts' : 'Whale opens are balanced', state, detail: `${entriesIn ? 'Whale' : 'Estimated whale'} opens: longs ${usd(opensL)}, shorts ${usd(opensS)}.` });
   } else {
     items.push({ id: 'whales', label: 'Whale data unavailable', state: 'na', detail: 'Binance has no top-trader data for this pair.' });
   }
 
   // 3. Is the crowd on the wrong side?
-  const w = whales[n - 1];
   const crowd = last.crowdLong;
-  const share = last.whaleLong ?? last.smartLong;
+  const share = whaleShare ?? last.whaleLong ?? last.smartLong;
   if (share != null && crowd != null) {
     const strong = share > 0.6 && crowd < 0.4;
-    const state = strong ? 'good' : w.gap > 5 ? 'warn' : w.gap < -5 ? 'bad' : 'na';
-    items.push({ id: 'gap', label: strong ? 'Crowd is short against long whales' : w.gap > 5 ? 'Whales longer than the crowd' : w.gap < -5 ? 'Whales shorter than the crowd' : 'Whales and crowd agree', state, detail: `Whales ${Math.round(share * 100)}% long, crowd ${Math.round(crowd * 100)}% long (gap ${w.gap > 0 ? '+' : ''}${Math.round(w.gap)}).` });
+    const gap = (share - crowd) * 100;
+    const state = strong ? 'good' : gap > 5 ? 'warn' : gap < -5 ? 'bad' : 'na';
+    items.push({ id: 'gap', label: strong ? 'Crowd is short against long whales' : gap > 5 ? 'Whales longer than the crowd' : gap < -5 ? 'Whales shorter than the crowd' : 'Whales and crowd agree', state, detail: `Whales ${Math.round(share * 100)}% long, crowd ${Math.round(crowd * 100)}% long (gap ${gap > 0 ? '+' : ''}${Math.round(gap)}).` });
   }
 
   // 4. Where is price against whale cost basis and liquidation clusters?
-  const entries = whaleEntries(bars, whales);
+  const entries = entriesIn ?? whaleEntries(bars, whales);
   const above = bucketLevels(levels.filter((lv) => lv.side === 'short' && lv.price > last.c), last.c, 0.5);
   const total = above.reduce((s, b) => s + b.short, 0);
   const near = above.filter((b) => b.price < last.c * 1.05).reduce((s, b) => s + b.short, 0);
   const dist = entries.long ? ((last.c - entries.long) / entries.long) * 100 : null;
   const parts = [];
-  if (dist != null) parts.push(`Price is ${Math.abs(dist).toFixed(1)}% ${dist >= 0 ? 'above' : 'below'} the estimated whale long entry.`);
+  if (dist != null) parts.push(`Price is ${Math.abs(dist).toFixed(1)}% ${dist >= 0 ? 'above' : 'below'} the ${entriesIn ? '' : 'estimated '}whale long entry.`);
   if (total > 0) parts.push(`${usd(near).slice(1)} of estimated short liquidations sit within 5% above.`);
   const nearBase = dist != null && dist >= -1 && dist <= 3;
   const magnet = total > 0 && near / total > 0.4;

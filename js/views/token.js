@@ -1,5 +1,6 @@
 // One pair in depth: price with order-flow and positioning layers, setup check, whale moves, funding.
-import { getMarket, getChartData, CHART_INTERVALS } from '../api.js';
+import { getMarket, getChartData, getSmartHistory, CHART_INTERVALS } from '../api.js';
+import { alignToBars, pickCohort, summarize } from '../smartmoney.js';
 import { multiChart } from '../multichart.js';
 import { marketLayers, whaleLayers, whaleEntries, liquidationLevels, setupCheck, fmtCompact } from '../indicators.js';
 import { h, ticker, fmtPrice, fmtPct, fmtUsd, signClass, shareBar, watchlist, store } from '../util.js';
@@ -48,17 +49,20 @@ export function tokenView(root, { symbol, go }) {
   const facts = h('div.facts');
   const moves = h('div.moves');
   const funding = h('div.funding-bars');
+  const smartBox = h('div.smart-box');
+  const sourceTag = h('span.source-tag');
 
   root.replaceChildren(
     h('button.back', { onclick: () => go('whales') }, '← All pairs'),
     h('section.panel', h('div.token-top', head, h('div.toolbar-right', h('button.btn.ghost', { onclick: () => go('liqmap', symbol) }, 'Liquidation map →'), starBtn))),
-    h('section.panel', h('div.toolbar', h('h2', 'Chart'), intervalBar), layerBar, chartBox),
+    h('section.panel', h('div.toolbar', h('div.title-row', h('h2', 'Chart'), sourceTag), intervalBar), layerBar, chartBox),
+    h('section.panel', h('h2', 'Smart money positions'), smartBox),
     h('div.split',
       h('section.panel.grow', h('h2', 'Setup check'), h('p.note', 'Four questions to ask before trusting a move, answered from the last 12 candles.'), checks),
       h('aside.panel.side', h('h2', 'Right now'), facts),
     ),
     h('div.split',
-      h('section.panel.grow', h('h2', 'Biggest whale moves'), h('p.note', 'Largest estimated changes in whale net exposure in this window. Likely ranking changes are left out.'), moves),
+      h('section.panel.grow', h('h2', 'Biggest whale moves'), h('p.note', 'Largest changes in whale net exposure in this window. Changes caused by traders joining or leaving the whale group are left out.'), moves),
       h('section.panel.grow', h('h2', 'Funding'), h('p.note', 'Positive means longs pay shorts, usually every 8 hours.'), funding),
     ),
   );
@@ -108,7 +112,10 @@ export function tokenView(root, { symbol, go }) {
     chartBox.style.height = '';
     chartBox.replaceChildren(h('p.loading', 'Loading chart…'));
     try {
-      const raw = await getChartData(symbol, interval, 300);
+      const [raw, smartHist] = await Promise.all([
+        getChartData(symbol, interval, 300),
+        getSmartHistory(symbol).catch((e) => ({ error: e.message })),
+      ]);
       if (!alive) return;
       if (raw.bars.length < 20) {
         chartBox.replaceChildren(h('p.empty', 'Not enough history for this pair yet.'));
@@ -117,8 +124,19 @@ export function tokenView(root, { symbol, go }) {
       const market = marketLayers(raw.bars);
       const whales = whaleLayers(raw.bars);
       const levels = liquidationLevels(raw.bars, market).active;
-      data = { ...raw, market, whales, levels, entries: whaleEntries(raw.bars, whales) };
+      data = { ...raw, market, whales, levels, entries: whaleEntries(raw.bars, whales), exact: null, smartError: smartHist?.error ?? null };
+      // Exact whale data: per-candle moves/opens from consecutive Smart Money snapshots.
+      const snaps = smartHist?.snapshots;
+      if (snaps?.length) {
+        const last = snaps.at(-1);
+        const cohort = pickCohort(last);
+        const aligned = alignToBars(snaps, raw.bars, CHART_INTERVALS[interval]);
+        if (cohort && aligned.some((a) => a.net != null)) {
+          data.exact = { source: smartHist.source, aligned, latest: summarize(last, cohort, last.oiUsd), whale: summarize(last, 'whale', last.oiUsd), smart: summarize(last, 'smart', last.oiUsd), t: last.t, firstT: snaps[0].t };
+        }
+      }
       renderChart();
+      renderSmart();
       renderChecks();
       renderFacts();
       renderMoves();
@@ -140,33 +158,46 @@ export function tokenView(root, { symbol, go }) {
   function renderChart() {
     if (!data) return;
     disposeChart();
-    const { bars, market, whales, entries } = data;
+    const { bars, market, whales, entries, exact } = data;
     const panes = [];
+    const ex = exact?.aligned;
+    const est = ex ? '' : ' (est.)';
+    sourceTag.textContent = ex ? (exact.source === 'demo' ? 'Whale layers: exact (simulated)' : 'Whale layers: exact') : 'Whale layers: estimated';
+    sourceTag.dataset.state = ex ? 'exact' : 'est';
     const add = (id, pane) => layers.has(id) && panes.push(pane);
     const hasWhales = whales.some((w) => w.longUsd != null);
     add('gap', {
       id: 'gap', label: 'Whales vs crowd', kind: 'share', format: share,
-      series: [
-        { name: 'Whales', values: bars.map((b) => b.whaleLong ?? b.smartLong), color: '--whale', width: 2 },
-        { name: 'Crowd', values: bars.map((b) => b.crowdLong), color: '--crowd' },
-      ],
+      series: ex
+        ? [
+            { name: exact.latest.cohort === 'smart' ? 'Smart traders' : 'Whales', values: ex.map((a) => a.longShare), color: '--whale', width: 2 },
+            { name: 'Top-trader ratio', values: bars.map((b) => b.whaleLong ?? b.smartLong), color: '--muted', width: 1 },
+            { name: 'Crowd', values: bars.map((b) => b.crowdLong), color: '--crowd' },
+          ]
+        : [
+            { name: 'Whales', values: bars.map((b) => b.whaleLong ?? b.smartLong), color: '--whale', width: 2 },
+            { name: 'Crowd', values: bars.map((b) => b.crowdLong), color: '--crowd' },
+          ],
     });
-    if (hasWhales) {
+    if (hasWhales || ex) {
+      const src = ex
+        ? ex.map((a) => ({ shift: a.move, opensLong: a.opensLong, opensShort: a.opensShort == null ? null : a.opensShort, net: a.net, rosterChange: a.roster }))
+        : whales;
       add('shift', {
-        id: 'shift', label: 'Whale moves (est.)', kind: 'hist', format: usd,
+        id: 'shift', label: `Whale moves${est}`, kind: 'hist', format: usd,
         series: [
-          { values: whales.map((w) => w.shift), color: '--long', colorDown: '--short' },
-          { kind: 'dots', values: whales.map((w) => w.rosterChange), color: '--muted' },
+          { values: src.map((w) => w.shift), color: '--long', colorDown: '--short' },
+          { kind: 'dots', values: src.map((w) => w.rosterChange), color: '--muted' },
         ],
       });
       add('opens', {
-        id: 'opens', label: 'Whale opens (est.)', kind: 'hist', format: usd,
+        id: 'opens', label: `Whale opens${est}`, kind: 'hist', format: usd,
         series: [
-          { name: 'Long', values: whales.map((w) => w.opensLong), color: '--long' },
-          { name: 'Short', values: whales.map((w) => -w.opensShort), color: '--short', colorDown: '--short' },
+          { name: 'Long', values: src.map((w) => w.opensLong), color: '--long' },
+          { name: 'Short', values: src.map((w) => (w.opensShort == null ? null : -w.opensShort)), color: '--short', colorDown: '--short' },
         ],
       });
-      add('net', { id: 'net', label: 'Whale net position (est.)', kind: 'step', format: usd, series: [{ values: whales.map((w) => w.net), color: '--long', colorDown: '--short', width: 2 }] });
+      add('net', { id: 'net', label: `Whale net position${est}`, kind: 'step', format: usd, series: [{ values: src.map((w) => w.net), color: '--long', colorDown: '--short', width: 2 }] });
     }
     add('flow', {
       id: 'flow', label: 'Net longs / shorts (est.)', kind: 'line', format: usd,
@@ -191,7 +222,11 @@ export function tokenView(root, { symbol, go }) {
     });
 
     const levels = [];
-    if (layers.has('entries') && hasWhales) {
+    if (layers.has('entries') && ex) {
+      const who = exact.latest.cohort === 'smart' ? 'Smart traders' : 'Whale';
+      if (exact.latest.longEntry) levels.push({ price: exact.latest.longEntry, label: `${who} long entry`, color: '--long' });
+      if (exact.latest.shortEntry) levels.push({ price: exact.latest.shortEntry, label: `${who} short entry`, color: '--short' });
+    } else if (layers.has('entries') && hasWhales) {
       if (entries.long) levels.push({ price: entries.long, label: 'Whale long entry est.', color: '--long' });
       if (entries.short) levels.push({ price: entries.short, label: 'Whale short entry est.', color: '--short' });
     }
@@ -207,7 +242,15 @@ export function tokenView(root, { symbol, go }) {
   }
 
   function renderChecks() {
-    const items = setupCheck(data.bars, data.market, data.whales, { levels: data.levels });
+    const ex = data.exact;
+    const whalesForCheck = ex
+      ? ex.aligned.map((a, i) => ({ ...data.whales[i], longUsd: a.net == null ? null : 1, opensLong: a.opensLong ?? 0, opensShort: a.opensShort ?? 0 }))
+      : data.whales;
+    const items = setupCheck(data.bars, data.market, whalesForCheck, {
+      levels: data.levels,
+      entries: ex ? { long: ex.latest.longEntry, short: ex.latest.shortEntry } : null,
+      whaleShare: ex ? ex.latest.longShare : null,
+    });
     const icon = { good: '✓', warn: '!', bad: '✕', na: '–' };
     checks.replaceChildren(...(items.length
       ? items.map((it) => h(`div.check-item.${it.state}`, h('span.check-icon', { 'aria-hidden': 'true' }, icon[it.state]), h('div', h('strong', it.label), h('p', it.detail))))
@@ -227,19 +270,29 @@ export function tokenView(root, { symbol, go }) {
       h('div.fact', h('span.fact-label', 'Crowd'), shareBar(last.crowdLong ?? 0.5, 'Crowd')),
       row('Open interest', last.oi != null ? fmtUsd(last.oi * last.c) : '–'),
       row('CVD, last 24 candles', usd(m.at(-1).cvd - m.at(-25).cvd), signClass(m.at(-1).cvd - m.at(-25).cvd)),
-      row('Whale long entry est.', entries.long ? fmtPrice(entries.long) : '–'),
-      row('Whale short entry est.', entries.short ? fmtPrice(entries.short) : '–'),
+      ...(data.exact
+        ? [
+            row('Whale long entry', data.exact.latest.longEntry ? fmtPrice(data.exact.latest.longEntry) : '–'),
+            row('Whale short entry', data.exact.latest.shortEntry ? fmtPrice(data.exact.latest.shortEntry) : '–'),
+          ]
+        : [
+            row('Whale long entry est.', entries.long ? fmtPrice(entries.long) : '–'),
+            row('Whale short entry est.', entries.short ? fmtPrice(entries.short) : '–'),
+          ]),
       row('Liquidation events, 24 candles', String(recentLiq.length)),
       data.listedAt && row('Listed on Binance futures', new Date(data.listedAt).toLocaleDateString()),
     );
   }
 
   function renderMoves() {
-    const { whales, bars } = data;
-    const big = whales.map((w, i) => ({ ...w, price: bars[i].c })).filter((w) => !w.rosterChange && w.shift !== 0)
+    const { bars } = data;
+    const whales = data.exact
+      ? data.exact.aligned.map((a) => ({ t: a.t, shift: a.move ?? 0, opensLong: a.opensLong ?? 0, opensShort: a.opensShort ?? 0, rosterChange: a.roster }))
+      : data.whales;
+    const big = whales.map((w, i) => ({ ...w, price: bars[i].c })).filter((w) => (data.exact || !w.rosterChange) && w.shift)
       .sort((a, b) => Math.abs(b.shift) - Math.abs(a.shift)).slice(0, 8).sort((a, b) => b.t - a.t);
     if (!big.length) {
-      moves.replaceChildren(h('p.empty', 'No whale data for this pair.'));
+      moves.replaceChildren(h('p.empty', data.exact ? 'No whale moves recorded in this window yet.' : 'No whale data for this pair.'));
       return;
     }
     moves.replaceChildren(h('ol.move-list', ...big.map((b) =>
@@ -248,6 +301,44 @@ export function tokenView(root, { symbol, go }) {
         h('span.move-size', `${b.shift > 0 ? '+' : ''}${usd(b.shift)}${b.opensLong || b.opensShort ? ` · opened ${b.opensLong >= b.opensShort ? 'longs ' + usd(b.opensLong) : 'shorts ' + usd(b.opensShort)}` : ' · closing only'}`),
         h('span.move-meta', `at ${fmtPrice(b.price)} · ${new Date(b.t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`),
       ))));
+  }
+
+  function renderSmart() {
+    const ex = data.exact;
+    if (!ex) {
+      smartBox.replaceChildren(h('p.note', data.smartError
+        ? `Your whale data server couldn't be reached (${data.smartError}). Whale layers above are estimates.`
+        : "No exact whale data for this pair. Whale layers above are estimated from Binance's top-trader ratio. To get exact positions, average entries and PnL, run the whale data server (worker/smartmoney.mjs) and connect it on the Whales page."));
+      return;
+    }
+    const price = data.bars.at(-1).c;
+    const pctFrom = (entry) => (entry ? `${(((price - entry) / entry) * 100).toFixed(1)}%` : '');
+    const rows = [];
+    for (const [key, name] of [['whale', 'Whales'], ['smart', 'Smart traders']]) {
+      const c = ex[key];
+      if (!c || (c.longUsd === 0 && c.shortUsd === 0)) continue;
+      for (const side of ['long', 'short']) {
+        const S = side === 'long' ? 'long' : 'short';
+        const upnl = c[`${S}Upnl`];
+        const entry = c[`${S}Entry`];
+        rows.push(h(`tr.static${ex.latest.cohort === key ? '.shown' : ''}`,
+          h('th', { scope: 'row' }, `${name} ${side}`),
+          h('td.num', c[`${S}Count`] ?? '–'),
+          h('td.num', fmtUsd(c[`${S}Usd`])),
+          h('td.num', entry ? fmtPrice(entry) : '–', entry ? h('span.muted', ` ${pctFrom(entry)}`) : ''),
+          h(`td.num.${signClass(upnl)}`, upnl == null ? '–' : fmtUsd(upnl, true)),
+          h('td.num', c[`${S}WinRate`] == null ? '–' : `${Math.round(c[`${S}WinRate`] * 100)}%`),
+        ));
+      }
+    }
+    const fallback = ex.latest.cohort === 'smart';
+    smartBox.replaceChildren(
+      h('p.note', `${ex.source === 'demo' ? 'Simulated data (demo). ' : ''}Snapshot ${new Date(ex.t).toLocaleTimeString()}. History since ${new Date(ex.firstT).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}; older candles have no exact whale values.${fallback ? ' Fewer than 10 whales hold this pair, so the chart uses smart traders.' : ''}`),
+      h('div.table-wrap', h('table.grid.smart-table',
+        h('thead', h('tr', ...['Group', 'Traders', 'Position', 'Avg entry (vs price)', 'Unrealized PnL', 'In profit'].map((t) => h('th', { scope: 'col' }, t)))),
+        h('tbody', ...rows),
+      )),
+    );
   }
 
   function renderFunding() {

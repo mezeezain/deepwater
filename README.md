@@ -56,6 +56,44 @@ Price is treated as the result; positioning and order flow are what move it. Tog
 
 Everything marked *est.* is an estimate: Binance publishes ratios and totals, not individual positions or entry prices.
 
+## Exact whale data (whale data server)
+
+Binance's public API only publishes the top-trader long/short *ratio*. The exact numbers (how many whales are long and short, their position value in USD, average entry price, unrealized PnL and share in profit) come from the Smart Money data behind Binance's futures website. Browsers can't read that from another site, so `worker/smartmoney.mjs` fetches it on a server and the app reads it from there.
+
+Without a server, the app shows estimates labelled *est.*. With one, the Whales table, pair chart, Smart money panel, entry lines, setup check and liquidation map switch to exact values for every pair the server tracks.
+
+**Cohorts.** *Whales* are the largest consistently profitable accounts; *smart traders* are profitable accounts with smaller positions. If fewer than 10 whales hold a pair, smart traders are shown instead (marked **S**).
+
+**How moves and opens are worked out.** The data is a snapshot of open positions, so the server stores a snapshot per pair every sweep, and the app compares each one with the previous one:
+
+- Position values are converted to contracts at that snapshot's mark price, so a price rise alone isn't counted as buying.
+- **Whale moves** = change in (long contracts − short contracts) × price. **Whale opens** count only increases, so closing shorts moves the line but isn't an open.
+- **Roster changes** (grey dots): adding at the market price moves the average entry to a predictable value, and closing leaves it unchanged. If the entry jumps somewhere else, a trader joined or left the group. That change is left out of moves and opens.
+- The crowd stays Binance's all-accounts ratio. "Open interest minus whales" sits near 50% on every pair, because whales hold a small share of open interest.
+
+### Running it
+
+```bash
+# 1. Check the response format first (field names are matched by meaning; this shows what was understood)
+node worker/smartmoney.mjs --probe BTCUSDT
+
+# 2. Run the server (polls the 120 most traded pairs, one request every 1.2s ≈ one sweep every 2.5 minutes)
+ALLOW_ORIGIN=https://<you>.github.io node worker/smartmoney.mjs
+
+# Try the whole flow without Binance
+node worker/smartmoney.mjs --demo
+```
+
+Then on the **Whales** page, open **Whale data** and paste the server's address. The page is served over HTTPS, so the server needs HTTPS too: put it behind Caddy, nginx or a Cloudflare tunnel.
+
+API: `GET /api/health`, `GET /api/overview` (latest numbers for every pair), `GET /api/symbol/BTCUSDT?since=<ms>` (snapshot history). Snapshots are kept for `KEEP_HOURS` (default 48) in `worker/data/`. Settings are at the top of the file.
+
+**Before you rely on it:**
+- The endpoint is undocumented. Binance can change or remove it at any time, and using it may not be allowed by Binance's terms. Read them for your use case.
+- The server polls slowly and pauses when Binance answers 403, 418 or 429, doubling the pause each time. Keep it that way; don't use proxies to get around the limits.
+- Binance blocks some regions, including the US. Run the server from a supported country.
+- If `--probe` shows no recognised fields, the response format differs from what the parser expects. Share the probe output so the matching rules in `js/smartmoney.js` can be adjusted.
+
 ## Pump catcher
 
 A pair has to pass three gates before it fires:
@@ -104,7 +142,7 @@ These cover the gates, order-flow maths, rise and dip accounting (including that
 ## Limits
 
 - **"Whales"** are Binance's top traders by position size (`topLongShortPositionRatio`). Binance doesn't publish trader counts or profitability, so there's no fallback for pairs with few whales.
-- **Per-trader PnL, whale dollar positions and entry prices** aren't published by Binance. Whale amounts and entries are estimated from the top-trader ratio and open interest.
+- **Whale dollar positions, entry prices and PnL** aren't in Binance's public API. They're exact only with the whale data server; otherwise they're estimated from the top-trader ratio and open interest. Exact history starts when the server starts, so older candles have no exact values.
 - **Positioning history** (open interest, long/short ratios) only goes back 30 days and isn't available at the weekly interval.
 - **Order book history** isn't available from Binance, so walls are tracked only while the map is open.
 - **Not included:** listings on other exchanges (no free data source) and chart drawing tools.
@@ -116,6 +154,8 @@ These cover the gates, order-flow maths, rise and dip accounting (including that
 index.html              shell: top bar, status strip, <main>
 css/app.css             theme tokens (light + dark) and all component styles
 js/engine.js            pump catcher rules: pure functions, shared by browser and worker
+js/smartmoney.js        Smart Money parsing, cohort choice, snapshot diffs (moves, opens, roster changes)
+js/smartmoney-demo.js   simulated Smart Money snapshots for demo mode
 js/indicators.js        chart layers, liquidation levels, order book walls, setup check (pure functions)
 js/multichart.js        stacked canvas chart: candles plus indicator panes, shared crosshair
 js/catcher.js           scanner loop: ticker stream, screening, confirmation, tracking
@@ -129,6 +169,7 @@ js/chart.js             canvas candle chart with share overlays and level lines;
 js/app.js               hash router and navigation
 js/views/*.js           one file per screen; each returns a cleanup function
 worker/catcher.mjs      Node worker with Telegram alerts
+worker/smartmoney.mjs   whale data server: polls Smart Money data, stores snapshots, serves the app
 test/*.test.mjs         engine and indicator tests (node --test)
 ```
 

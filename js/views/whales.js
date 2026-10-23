@@ -1,5 +1,5 @@
 // Whales vs crowd: who is long when everyone else is short, across the most traded pairs.
-import { getMarket, getPositioning } from '../api.js';
+import { getMarket, getPositioning, getSmartOverview, whaleServer, testWhaleServer, isDemo } from '../api.js';
 import { sparkline } from '../chart.js';
 import { h, ticker, fmtPrice, fmtPct, fmtUsd, fmtShare, signClass, shareBar, sortRows, csv, copyText, toast, watchlist, store } from '../util.js';
 
@@ -20,6 +20,9 @@ const COLUMNS = [
   { key: 'crowdLong', label: 'Crowd long', get: (r) => fmtShare(r.crowdLong) },
   { key: 'gap', label: 'Gap', get: (r) => Math.round(r.gap) },
   { key: 'smartLong', label: 'Top accounts long', get: (r) => fmtShare(r.smartLong) },
+  { key: 'whaleNet', label: 'Whale net USD', get: (r) => (r.whaleNet == null ? '' : Math.round(r.whaleNet)) },
+  { key: 'whaleUpnl', label: 'Whale unrealized PnL USD', get: (r) => (r.whaleUpnl == null ? '' : Math.round(r.whaleUpnl)) },
+  { key: 'cohort', label: 'Cohort', get: (r) => r.cohort || 'top-trader ratio' },
   { key: 'shift24h', label: 'Whale shift 24h', get: (r) => Math.round(r.shift24h) },
   { key: 'oiChange', label: 'Open interest 24h', get: (r) => fmtPct(r.oiChange) },
   { key: 'funding', label: 'Funding', get: (r) => (r.funding == null ? '' : (r.funding * 100).toFixed(4) + '%') },
@@ -70,6 +73,16 @@ export function whalesView(root, { go }) {
   const tableWrap = h('div.table-wrap');
   const more = h('button.btn.ghost', { onclick: () => ((showAll = !showAll), render()) });
   const exportBtn = h('button.btn.ghost', { onclick: exportCsv }, 'Copy as CSV');
+  let smart = null; // { source, rows } when exact whale data is available
+  let smartError = null;
+  const sourceLine = h('p.source-line');
+  const sourcePanel = h('div.settings');
+  sourcePanel.hidden = true;
+  const sourceBtn = h('button.btn.ghost', { 'aria-expanded': 'false', onclick: () => {
+    sourcePanel.hidden = !sourcePanel.hidden;
+    sourceBtn.setAttribute('aria-expanded', String(!sourcePanel.hidden));
+    renderSourcePanel();
+  } }, 'Whale data');
 
   root.replaceChildren(
     h('section.hero',
@@ -81,7 +94,9 @@ export function whalesView(root, { go }) {
       summary,
     ),
     h('section.panel',
-      h('div.toolbar', lensBar, h('div.toolbar-right', search, exportBtn)),
+      h('div.toolbar', lensBar, h('div.toolbar-right', search, sourceBtn, exportBtn)),
+      sourcePanel,
+      sourceLine,
       progress,
       tableWrap,
       h('div.table-foot', more,
@@ -145,6 +160,7 @@ export function whalesView(root, { go }) {
         th('crowdLong', 'Crowd long', 'Share of all accounts that are long'),
         th('gap', 'Gap', 'Points between whale and crowd long share'),
         th('smartLong', 'Top accts', 'Long share of top trader accounts'),
+        th('whaleNet', 'Whale net', 'Whale long minus short position value, in USD (exact data only)'),
         th('shift24h', 'Whale 24h', 'Change in whale long share over 24 hours, in points'),
         h('th', { scope: 'col' }, 'Trend'),
         th('oiChange', 'OI 24h', 'Change in open interest value over 24 hours'),
@@ -152,7 +168,7 @@ export function whalesView(root, { go }) {
         th('price', 'Price'),
         th('change24h', '24h'),
       )),
-      h('tbody', visible.length ? visible.map(rowEl) : h('tr', h('td.empty', { colSpan: 12 }, emptyText()))),
+      h('tbody', visible.length ? visible.map(rowEl) : h('tr', h('td.empty', { colSpan: 13 }, emptyText()))),
     );
     tableWrap.replaceChildren(table);
   }
@@ -177,11 +193,14 @@ export function whalesView(root, { go }) {
           render();
         },
       }, starred ? '★' : '☆')),
-      h('th.pair', { scope: 'row' }, h('span.pair-name', ticker(r.symbol)), sig && h(`span.chip.${r.signal}`, { title: sig[1] }, sig[0])),
+      h('th.pair', { scope: 'row' }, h('span.pair-name', ticker(r.symbol)),
+        r.cohort === 'smart' && h('span.chip.aligned', { title: 'Fewer than 10 whales on this pair: smart traders shown instead' }, 'S'),
+        sig && h(`span.chip.${r.signal}`, { title: sig[1] }, sig[0])),
       h('td', shareBar(r.whaleLong, 'Whales')),
       h('td', shareBar(r.crowdLong, 'Crowd')),
       h('td.num.gap', { style: { '--gap': Math.min(1, r.gap / 90) } }, Math.round(r.gap)),
       h('td.num', fmtShare(r.smartLong)),
+      h(`td.num.${signClass(r.whaleNet)}`, { title: r.whaleUpnl == null ? '' : `Unrealized PnL ${fmtUsd(r.whaleUpnl, true)}` }, r.whaleNet == null ? '–' : fmtUsd(r.whaleNet, true)),
       h(`td.num.${signClass(r.shift24h)}`, `${r.shift24h > 0 ? '+' : ''}${Math.round(r.shift24h)}`),
       h('td', sparkline(r.trend, { colorVar: '--whale' })),
       h(`td.num.${signClass(r.oiChange)}`, fmtPct(r.oiChange)),
@@ -213,6 +232,49 @@ export function whalesView(root, { go }) {
     else toast('Your browser blocked the clipboard. Select the table and copy it instead.');
   }
 
+  function renderSourceLine() {
+    const n = smart?.rows.size ?? 0;
+    if (smart?.source === 'demo') sourceLine.textContent = `Whale numbers: simulated exact data (demo) for ${n} pairs. Whale long % is by position value; crowd is all accounts.`;
+    else if (smart) sourceLine.textContent = `Whale numbers: exact, from your whale data server (${n} pairs). Pairs it doesn't track use Binance's top-trader ratio.`;
+    else if (smartError) sourceLine.textContent = `Whale data server unreachable (${smartError}). Showing Binance's top-trader ratio instead.`;
+    else sourceLine.textContent = "Whale numbers: Binance's top-trader long/short ratio. Connect a whale data server under Whale data for exact positions, entries and PnL.";
+    sourceLine.dataset.state = smart ? 'exact' : smartError ? 'error' : 'ratio';
+  }
+
+  async function renderSourcePanel() {
+    const demoMode = await isDemo();
+    const input = h('input#whale-server-url.search', { type: 'url', placeholder: 'https://whales.example.com', value: whaleServer.get(), 'aria-label': 'Whale data server address', style: { width: '320px' } });
+    const result = h('p.note');
+    const connect = async () => {
+      const url = input.value.trim();
+      if (!url) {
+        whaleServer.set('');
+        result.textContent = 'Disconnected. Using the top-trader ratio.';
+        load();
+        return;
+      }
+      result.textContent = 'Checking…';
+      try {
+        const health = await testWhaleServer(url);
+        whaleServer.set(url);
+        result.textContent = `Connected: ${health.pairsWithData} pairs with data${health.demo ? ' (server is in demo mode)' : ''}.`;
+        load();
+      } catch (e) {
+        result.textContent = e.message;
+      }
+    };
+    sourcePanel.replaceChildren(
+      h('p.note', 'Exact whale positions (headcount, position value, average entry, unrealized PnL) come from Binance’s Smart Money data, which only a server can fetch. Run worker/smartmoney.mjs from this project on a server and paste its address here. See the README.'),
+      demoMode && h('p.note', 'Demo mode uses simulated exact data, so this setting has no effect until you switch to live data.'),
+      h('form.controls', { onsubmit: (e) => { e.preventDefault(); connect(); } },
+        h('label.field', h('span', 'Whale data server'), input),
+        h('button.btn', { type: 'submit' }, 'Connect'),
+        whaleServer.get() && h('button.btn.ghost', { type: 'button', onclick: () => { input.value = ''; connect(); } }, 'Disconnect'),
+      ),
+      result,
+    );
+  }
+
   async function load() {
     const market = await getMarket();
     const top = market.slice(0, SCAN_LIMIT);
@@ -223,6 +285,14 @@ export function whalesView(root, { go }) {
     }
     total = top.length;
     loaded = 0;
+    try {
+      smart = await getSmartOverview();
+      smartError = null;
+    } catch (e) {
+      smart = null;
+      smartError = e.message;
+    }
+    renderSourceLine();
     const byBatch = [];
     await Promise.all(
       top.map(async (m) => {
@@ -234,12 +304,24 @@ export function whalesView(root, { go }) {
           const crowdLong = p.crowd.at(-1).long;
           const oiNow = p.oi.at(-1)?.value;
           const oiThen = p.oi[0]?.value;
+          // Exact whale numbers when the whale data server has this pair; Binance's top-trader ratio otherwise.
+          const sm = smart?.rows.get(m.symbol)?.shown;
+          const exact = sm && sm.longShare != null;
+          const whaleLong = exact ? sm.longShare : now;
+          // Crowd stays Binance's all-accounts ratio: whales are a small slice of open interest, so
+          // "open interest minus whales" sits near 50% on every pair and hides the real disagreement.
+          const crowd = crowdLong;
           const r = {
             ...m,
-            whaleLong: now,
-            crowdLong,
+            whaleLong,
+            crowdLong: crowd,
+            exact,
+            cohort: exact ? sm.cohort : null,
+            whaleNet: exact ? sm.net : null,
+            whaleUpnl: exact ? (sm.longUpnl ?? 0) + (sm.shortUpnl ?? 0) : null,
+            whaleCount: exact ? (sm.longCount ?? 0) + (sm.shortCount ?? 0) : null,
             smartLong: p.smart.at(-1)?.long ?? null,
-            gap: Math.abs(now - crowdLong) * 100,
+            gap: Math.abs(whaleLong - crowd) * 100,
             shift24h: (now - then) * 100,
             oiChange: oiThen ? ((oiNow - oiThen) / oiThen) * 100 : null,
             trend: p.whales.map((x) => x.long),

@@ -1,6 +1,7 @@
 // Liquidation map: where leveraged positions opened in this window would be forced out,
 // with the live order book alongside. Estimated levels disappear once a wick trades through them.
-import { getChartData, getDepth } from '../api.js';
+import { getChartData, getDepth, getSmartHistory } from '../api.js';
+import { pickCohort, summarize } from '../smartmoney.js';
 import { marketLayers, whaleLayers, whaleEntries, liquidationLevels, bucketLevels, findWalls, fmtCompact } from '../indicators.js';
 import { h, ticker, fmtPrice, cssVar, store } from '../util.js';
 
@@ -78,7 +79,7 @@ export function liqmapView(root, { symbol, go }) {
   async function load() {
     renderIntervals();
     try {
-      const raw = await getChartData(symbol, interval, INTERVALS[interval]);
+      const [raw, smartHist] = await Promise.all([getChartData(symbol, interval, INTERVALS[interval]), getSmartHistory(symbol).catch(() => null)]);
       if (!alive) return;
       if (raw.bars.length < 20 || !raw.bars.some((b) => b.oi != null)) {
         say('Binance has no open interest history for this pair, so there is nothing to map.');
@@ -87,7 +88,14 @@ export function liqmapView(root, { symbol, go }) {
       const market = marketLayers(raw.bars);
       const whales = whaleLayers(raw.bars);
       const { columns, active } = liquidationLevels(raw.bars, market);
-      model = { bars: raw.bars, columns, active, entries: whaleEntries(raw.bars, whales) };
+      model = { bars: raw.bars, columns, active, entries: whaleEntries(raw.bars, whales), exactEntries: false };
+      // Prefer exact average entries from the whale data server.
+      const last = smartHist?.snapshots?.at(-1);
+      const sum = last && summarize(last, pickCohort(last));
+      if (sum && (sum.longEntry || sum.shortEntry)) {
+        model.entries = { long: sum.longEntry, short: sum.shortEntry };
+        model.exactEntries = true;
+      }
       say('');
       draw();
       renderClusters();
@@ -212,8 +220,8 @@ export function liqmapView(root, { symbol, go }) {
 
     // Whale entry estimates
     const lines = [
-      [model.entries.long, '--long', 'Whale long'],
-      [model.entries.short, '--short', 'Whale short'],
+      [model.entries.long, '--long', model.exactEntries ? 'Whale long entry' : 'Whale long est.'],
+      [model.entries.short, '--short', model.exactEntries ? 'Whale short entry' : 'Whale short est.'],
     ];
     for (const [p, color, label] of lines) {
       if (!p || p >= g.hi || p <= g.lo) continue;
