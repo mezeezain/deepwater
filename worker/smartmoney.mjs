@@ -11,10 +11,11 @@
 //   PORT=8787           HTTP port
 //   TOP=120             how many pairs to poll, by 24h volume (all pairs: TOP=1000)
 //   RATE_MS=1200        delay between Binance website requests (keep this polite)
-//   KEEP_HOURS=48       snapshot history kept per pair
+//   KEEP_HOURS=720      snapshot history kept per pair (Binance updates slowly, so keep weeks)
 //   ALLOW_ORIGIN=*      CORS origin allowed to read the API, e.g. https://you.github.io
 //   DATA_DIR=worker/data
 //   SMART_MONEY_URL     override the overview endpoint if Binance moves it
+//   FAPI_URL            override the futures API base (for testing)
 import http from 'node:http';
 import { mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -23,11 +24,11 @@ import { parseOverview, pickCohort, summarize } from '../js/smartmoney.js';
 import { demoSnapshots } from '../js/smartmoney-demo.js';
 
 const OVERVIEW_URL = process.env.SMART_MONEY_URL || 'https://www.binance.com/bapi/futures/v1/public/future/smart-money/signal/overview';
-const FAPI = 'https://fapi.binance.com';
+const FAPI = process.env.FAPI_URL || 'https://fapi.binance.com';
 const PORT = +(process.env.PORT || 8787);
 const TOP = +(process.env.TOP || 120);
 const RATE_MS = Math.max(500, +(process.env.RATE_MS || 1200));
-const KEEP_MS = +(process.env.KEEP_HOURS || 48) * 3_600_000;
+const KEEP_MS = +(process.env.KEEP_HOURS || 720) * 3_600_000;
 const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN || '*';
 const DATA_DIR = process.env.DATA_DIR || fileURLToPath(new URL('./data', import.meta.url));
 const HEADERS = { accept: 'application/json', 'user-agent': 'Mozilla/5.0 (compatible; deepwater-whale-worker)' };
@@ -80,6 +81,8 @@ if (args[0] === '--probe') {
     const raw = await fetchOverview(symbol);
     console.log('Raw response (first 3000 characters):\n' + JSON.stringify(raw, null, 2).slice(0, 3000));
     const snap = parseOverview(raw, { symbol });
+    snap.mark = +(await fapi('/fapi/v1/premiumIndex', { symbol })).markPrice;
+    console.log(`\nFormat: ${snap.format}. Binance last updated this ${snap.sourceT ? `${((Date.now() - snap.sourceT) / 3_600_000).toFixed(1)} hours ago` : '(no updateTime field)'}. Mark price ${snap.mark}.`);
     console.log('\nUnderstood fields:\n  ' + (snap.matched.join('\n  ') || '(none)'));
     console.log('\nFields not used:\n  ' + (snap.unmatched.join('\n  ') || '(none)'));
     const cohort = pickCohort(snap);
@@ -94,8 +97,9 @@ if (args[0] === '--probe') {
 
 // ---------------------------------------------------------------- state
 
-const history = new Map(); // symbol -> [snapshot]
-const status = { started: Date.now(), lastSweepStart: null, lastSweepMs: null, symbols: 0, snapshots: 0, errors: 0, lastError: null, sample: null };
+const history = new Map(); // symbol -> [snapshot], one per Binance update
+const latest = new Map(); // symbol -> { mark, oiUsd, checkedAt } from the most recent poll
+const status = { started: Date.now(), lastSweepStart: null, lastSweepMs: null, symbols: 0, polls: 0, newUpdates: 0, errors: 0, lastError: null, sample: null };
 
 mkdirSync(DATA_DIR, { recursive: true });
 for (const f of readdirSync(DATA_DIR).filter((f) => f.endsWith('.json'))) {
@@ -106,19 +110,22 @@ for (const f of readdirSync(DATA_DIR).filter((f) => f.endsWith('.json'))) {
 }
 
 function compact(snap) {
-  const side = (s) => ({ count: s.count, usd: s.usd, entry: s.entry, upnl: s.upnl, winRate: s.winRate });
+  const side = (s) => ({ count: s.count, qty: s.qty, usd: s.usd, entry: s.entry, upnl: s.upnl, profitCount: s.profitCount, winRate: s.winRate });
   return {
-    symbol: snap.symbol, t: snap.t, mark: snap.mark, oiUsd: snap.oiUsd,
+    symbol: snap.symbol, t: snap.t, sourceT: snap.sourceT, mark: snap.mark, oiUsd: snap.oiUsd,
     whale: { long: side(snap.whale.long), short: side(snap.whale.short) },
     smart: { long: side(snap.smart.long), short: side(snap.smart.short) },
   };
 }
 
+/** Store a snapshot only when Binance has recalculated (new updateTime); returns true if stored. */
 function record(snap) {
   const rows = history.get(snap.symbol) || [];
+  if (rows.length && rows.at(-1).t === snap.t) return false;
   rows.push(compact(snap));
   while (rows.length && Date.now() - rows[0].t > KEEP_MS) rows.shift();
   history.set(snap.symbol, rows);
+  return true;
 }
 
 function persist() {
@@ -157,8 +164,9 @@ async function sweep() {
       snap.oiUsd = +oi.openInterest * snap.mark;
       if (!pickCohort(snap)) throw new Error(`no whale fields recognised for ${symbol} (run --probe ${symbol})`);
       if (!status.sample) status.sample = snap.matched;
-      record(snap);
-      status.snapshots++;
+      latest.set(symbol, { mark: snap.mark, oiUsd: snap.oiUsd, checkedAt: Date.now() });
+      status.polls++;
+      if (record(snap)) status.newUpdates++;
     } catch (e) {
       status.errors++;
       status.lastError = `${new Date().toISOString()} ${e.message}`;
@@ -204,9 +212,17 @@ function demoLoop() {
 // ---------------------------------------------------------------- HTTP API
 
 function latestRow(symbol, rows) {
-  const s = rows.at(-1);
+  // Positions as of Binance's last update, valued at the latest mark price.
+  const now = latest.get(symbol);
+  const s = now ? { ...rows.at(-1), mark: now.mark, oiUsd: now.oiUsd } : rows.at(-1);
   const cohort = pickCohort(s);
-  return { symbol, t: s.t, mark: s.mark, oiUsd: s.oiUsd, cohort, shown: summarize(s, cohort, s.oiUsd), whale: summarize(s, 'whale', s.oiUsd), smart: summarize(s, 'smart', s.oiUsd) };
+  return { symbol, t: s.t, checkedAt: now?.checkedAt ?? null, mark: s.mark, oiUsd: s.oiUsd, cohort, shown: summarize(s, cohort, s.oiUsd), whale: summarize(s, 'whale', s.oiUsd), smart: summarize(s, 'smart', s.oiUsd) };
+}
+
+function binanceAges() {
+  const ts = [...history.values()].map((rows) => rows.at(-1)?.t).filter(Boolean);
+  if (!ts.length) return { newestUpdate: null, oldestUpdate: null };
+  return { newestUpdate: Math.max(...ts), oldestUpdate: Math.min(...ts) };
 }
 
 const server = http.createServer((req, res) => {
@@ -220,7 +236,7 @@ const server = http.createServer((req, res) => {
     return res.end();
   }
   if (url.pathname === '/api/health') {
-    return send(200, { ok: true, demo, ...status, blockedUntil: blockedUntil > Date.now() ? blockedUntil : null, pairsWithData: history.size, keepHours: KEEP_MS / 3_600_000 });
+    return send(200, { ok: true, demo, ...status, ...binanceAges(), blockedUntil: blockedUntil > Date.now() ? blockedUntil : null, pairsWithData: history.size, keepHours: KEEP_MS / 3_600_000 });
   }
   if (url.pathname === '/api/overview') {
     const rows = [];
@@ -231,7 +247,8 @@ const server = http.createServer((req, res) => {
   if (m) {
     const since = +(url.searchParams.get('since') || 0);
     const rows = (history.get(m[1]) || []).filter((s) => s.t >= since);
-    return send(rows.length ? 200 : 404, { symbol: m[1], snapshots: rows });
+    const now = latest.get(m[1]);
+    return send(rows.length ? 200 : 404, { symbol: m[1], snapshots: rows, mark: now?.mark ?? null, oiUsd: now?.oiUsd ?? null, checkedAt: now?.checkedAt ?? null });
   }
   send(404, { error: 'Not found. Try /api/health, /api/overview or /api/symbol/BTCUSDT' });
 });

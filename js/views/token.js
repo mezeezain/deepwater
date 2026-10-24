@@ -128,7 +128,8 @@ export function tokenView(root, { symbol, go }) {
       // Exact whale data: per-candle moves/opens from consecutive Smart Money snapshots.
       const snaps = smartHist?.snapshots;
       if (snaps?.length) {
-        const last = snaps.at(-1);
+        // Positions as of Binance's last update, valued at today's price.
+        const last = { ...snaps.at(-1), mark: smartHist.mark || raw.bars.at(-1).c };
         const cohort = pickCohort(last);
         const aligned = alignToBars(snaps, raw.bars, CHART_INTERVALS[interval]);
         if (cohort && aligned.some((a) => a.net != null)) {
@@ -170,7 +171,7 @@ export function tokenView(root, { symbol, go }) {
       id: 'gap', label: 'Whales vs crowd', kind: 'share', format: share,
       series: ex
         ? [
-            { name: exact.latest.cohort === 'smart' ? 'Smart traders' : 'Whales', values: ex.map((a) => a.longShare), color: '--whale', width: 2 },
+            { name: exact.latest.cohort === 'smart' ? 'Smart money' : 'Whales', values: ex.map((a) => a.longShare), color: '--whale', width: 2 },
             { name: 'Top-trader ratio', values: bars.map((b) => b.whaleLong ?? b.smartLong), color: '--muted', width: 1 },
             { name: 'Crowd', values: bars.map((b) => b.crowdLong), color: '--crowd' },
           ]
@@ -223,7 +224,7 @@ export function tokenView(root, { symbol, go }) {
 
     const levels = [];
     if (layers.has('entries') && ex) {
-      const who = exact.latest.cohort === 'smart' ? 'Smart traders' : 'Whale';
+      const who = exact.latest.cohort === 'smart' ? 'Smart money' : 'Whale';
       if (exact.latest.longEntry) levels.push({ price: exact.latest.longEntry, label: `${who} long entry`, color: '--long' });
       if (exact.latest.shortEntry) levels.push({ price: exact.latest.shortEntry, label: `${who} short entry`, color: '--short' });
     } else if (layers.has('entries') && hasWhales) {
@@ -314,30 +315,38 @@ export function tokenView(root, { symbol, go }) {
     const price = data.bars.at(-1).c;
     const pctFrom = (entry) => (entry ? `${(((price - entry) / entry) * 100).toFixed(1)}%` : '');
     const rows = [];
-    for (const [key, name] of [['whale', 'Whales'], ['smart', 'Smart traders']]) {
+    const fmtQty = (q) => (q == null ? '–' : q >= 1000 ? q.toLocaleString('en-US', { maximumFractionDigits: 0 }) : q.toPrecision(4));
+    for (const [key, name] of [['whale', 'Whales'], ['smart', 'All smart money']]) {
       const c = ex[key];
       if (!c || (c.longUsd === 0 && c.shortUsd === 0)) continue;
       for (const side of ['long', 'short']) {
         const S = side === 'long' ? 'long' : 'short';
         const upnl = c[`${S}Upnl`];
         const entry = c[`${S}Entry`];
+        const count = c[`${S}Count`];
+        const inProfit = c[`${S}ProfitCount`];
+        const rate = c[`${S}WinRate`];
         rows.push(h(`tr.static${ex.latest.cohort === key ? '.shown' : ''}`,
           h('th', { scope: 'row' }, `${name} ${side}`),
-          h('td.num', c[`${S}Count`] ?? '–'),
+          h('td.num', count ?? '–'),
+          h('td.num', fmtQty(c[`${S}Qty`]), h('span.muted', ` ${ticker(symbol)}`)),
           h('td.num', fmtUsd(c[`${S}Usd`])),
           h('td.num', entry ? fmtPrice(entry) : '–', entry ? h('span.muted', ` ${pctFrom(entry)}`) : ''),
           h(`td.num.${signClass(upnl)}`, upnl == null ? '–' : fmtUsd(upnl, true)),
-          h('td.num', c[`${S}WinRate`] == null ? '–' : `${Math.round(c[`${S}WinRate`] * 100)}%`),
+          h('td.num', rate == null ? '–' : `${Math.round(rate * 100)}%`, inProfit != null && count ? h('span.muted', ` ${inProfit}/${count}`) : ''),
         ));
       }
     }
     const fallback = ex.latest.cohort === 'smart';
+    const ageH = (Date.now() - ex.t) / 3_600_000;
+    const age = ageH < 1 ? `${Math.max(1, Math.round(ageH * 60))} minutes ago` : ageH < 48 ? `${ageH.toFixed(1)} hours ago` : `${Math.round(ageH / 24)} days ago`;
     smartBox.replaceChildren(
-      h('p.note', `${ex.source === 'demo' ? 'Simulated data (demo). ' : ''}Snapshot ${new Date(ex.t).toLocaleTimeString()}. History since ${new Date(ex.firstT).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}; older candles have no exact whale values.${fallback ? ' Fewer than 10 whales hold this pair, so the chart uses smart traders.' : ''}`),
+      h('p.note', `${ex.source === 'demo' ? 'Simulated data (demo). ' : ''}Binance last recalculated these positions ${age} (${new Date(ex.t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}). Value and unrealized PnL use the current price. "All smart money" includes the whales.${fallback ? ' Fewer than 10 whales hold this pair, so the chart uses all smart money.' : ''}`),
       h('div.table-wrap', h('table.grid.smart-table',
-        h('thead', h('tr', ...['Group', 'Traders', 'Position', 'Avg entry (vs price)', 'Unrealized PnL', 'In profit'].map((t) => h('th', { scope: 'col' }, t)))),
+        h('thead', h('tr', ...['Group', 'Traders', 'Size', 'Value', 'Avg entry (vs price)', 'Unrealized PnL', 'In profit'].map((t) => h('th', { scope: 'col' }, t)))),
         h('tbody', ...rows),
       )),
+      h('p.note', `Exact whale history on this server starts ${new Date(ex.firstT).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}. Whale moves appear on the chart at each Binance update after that.`),
     );
   }
 

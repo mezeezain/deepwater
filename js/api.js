@@ -294,7 +294,7 @@ export async function getSmartOverview() {
 export async function getSmartHistory(symbol) {
   if (await isDemo()) return { source: 'demo', snapshots: demoHistoryFor(symbol) };
   const body = await fromServer(`/api/symbol/${encodeURIComponent(symbol)}`, 60_000);
-  return body ? { source: 'server', snapshots: body.snapshots } : null;
+  return body ? { source: 'server', snapshots: body.snapshots, mark: body.mark } : null;
 }
 
 /** Order book snapshot: { bids: [[price, qty]], asks: [[price, qty]] } */

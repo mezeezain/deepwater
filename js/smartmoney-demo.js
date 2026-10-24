@@ -63,10 +63,12 @@ export function demoSnapshots(symbol, bars, oiUsdOf = () => 5e8) {
         x.q += (x.q0 - x.q) * 0.02;
       }
     }
+    // Same shape Binance sends: size in coins, average entry, trader count and how many are in profit.
     const snapSide = (x) => {
-      const usd = x.q * P;
-      const upnlSign = x === book.whale.short || x === book.smart.short ? -1 : 1;
-      return { count: x.count, usd, entry: x.entry, upnl: upnlSign * (P - x.entry) * x.q, winRate: Math.min(0.95, Math.max(0.05, 0.5 + upnlSign * ((P - x.entry) / P) * 6)) };
+      const dir = x === book.whale.short || x === book.smart.short ? -1 : 1;
+      const winRate = Math.min(0.95, Math.max(0.05, 0.5 + dir * ((P - x.entry) / P) * 6));
+      const profitCount = Math.round(x.count * winRate);
+      return { count: x.count, qty: x.q, usd: null, entry: x.entry, upnl: null, profitCount, winRate: x.count ? profitCount / x.count : null };
     };
     out.push({
       symbol,

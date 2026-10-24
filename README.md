@@ -58,17 +58,31 @@ Everything marked *est.* is an estimate: Binance publishes ratios and totals, no
 
 ## Exact whale data (whale data server)
 
-Binance's public API only publishes the top-trader long/short *ratio*. The exact numbers (how many whales are long and short, their position value in USD, average entry price, unrealized PnL and share in profit) come from the Smart Money data behind Binance's futures website. Browsers can't read that from another site, so `worker/smartmoney.mjs` fetches it on a server and the app reads it from there.
+Binance's public API only publishes the top-trader long/short *ratio*. The Smart Money data behind Binance's futures website is more detailed, and `worker/smartmoney.mjs` fetches it on a server so the app can read it (browsers can't fetch it from another site).
+
+**What Binance sends** (checked against a live response in October 2026), per side (long and short):
+
+| Group | Fields |
+|---|---|
+| **Whales** | trader count, position size in coins, average entry price, traders in profit |
+| **All smart money** (Binance calls them "Traders"; includes the whales) | the same four fields |
+
+It also sends `updateTime`, the time Binance last recalculated the data. In the first live check, that was almost 22 hours old, so expect updates to be infrequent.
+
+What the app shows from that:
+- **Value** = size × current mark price.
+- **Unrealized PnL** = (price − entry) × size for longs, the reverse for shorts. Binance doesn't send it, but it follows exactly from size and entry.
+- **In profit** = traders in profit ÷ traders.
+- If fewer than 10 whales hold a pair, the chart uses all smart money instead (marked **S** in the table).
 
 Without a server, the app shows estimates labelled *est.*. With one, the Whales table, pair chart, Smart money panel, entry lines, setup check and liquidation map switch to exact values for every pair the server tracks.
 
-**Cohorts.** *Whales* are the largest consistently profitable accounts; *smart traders* are profitable accounts with smaller positions. If fewer than 10 whales hold a pair, smart traders are shown instead (marked **S**).
+**How moves and opens are worked out.** The server stores one snapshot per pair each time Binance's `updateTime` changes (repeat polls of the same update are dropped). The app compares each snapshot with the previous one:
 
-**How moves and opens are worked out.** The data is a snapshot of open positions, so the server stores a snapshot per pair every sweep, and the app compares each one with the previous one:
-
-- Position values are converted to contracts at that snapshot's mark price, so a price rise alone isn't counted as buying.
-- **Whale moves** = change in (long contracts − short contracts) × price. **Whale opens** count only increases, so closing shorts moves the line but isn't an open.
-- **Roster changes** (grey dots): adding at the market price moves the average entry to a predictable value, and closing leaves it unchanged. If the entry jumps somewhere else, a trader joined or left the group. That change is left out of moves and opens.
+- Sizes are compared in coins, so a price move never counts as buying.
+- **Whale moves** = change in (long size − short size) × price. **Whale opens** count only increases, so closing shorts moves the line but isn't an open.
+- **Roster changes** (grey dots): adding at the market price moves the average entry to a predictable value, and closing leaves it unchanged. If the entry jumps somewhere else, a trader joined or left the group, and that change is left out of moves and opens.
+- Moves land on the candle where Binance's update happened. Because updates are infrequent, short-interval charts show whale moves only at those candles.
 - The crowd stays Binance's all-accounts ratio. "Open interest minus whales" sits near 50% on every pair, because whales hold a small share of open interest.
 
 ### Running it
@@ -80,13 +94,16 @@ node worker/smartmoney.mjs --probe BTCUSDT
 # 2. Run the server (polls the 120 most traded pairs, one request every 1.2s ≈ one sweep every 2.5 minutes)
 ALLOW_ORIGIN=https://<you>.github.io node worker/smartmoney.mjs
 
+# Or set everything up on a fresh Ubuntu VPS (Node, service, firewall, DuckDNS, HTTPS) in one step:
+curl -fsSL https://raw.githubusercontent.com/mezeezain/deepwater/main/deploy/setup.sh | bash
+
 # Try the whole flow without Binance
 node worker/smartmoney.mjs --demo
 ```
 
 Then on the **Whales** page, open **Whale data** and paste the server's address. The page is served over HTTPS, so the server needs HTTPS too: put it behind Caddy, nginx or a Cloudflare tunnel.
 
-API: `GET /api/health`, `GET /api/overview` (latest numbers for every pair), `GET /api/symbol/BTCUSDT?since=<ms>` (snapshot history). Snapshots are kept for `KEEP_HOURS` (default 48) in `worker/data/`. Settings are at the top of the file.
+API: `GET /api/health`, `GET /api/overview` (latest numbers for every pair), `GET /api/symbol/BTCUSDT?since=<ms>` (snapshot history). Snapshots are kept for `KEEP_HOURS` (default 720, 30 days) in `worker/data/`. Settings are at the top of the file.
 
 **Before you rely on it:**
 - The endpoint is undocumented. Binance can change or remove it at any time, and using it may not be allowed by Binance's terms. Read them for your use case.

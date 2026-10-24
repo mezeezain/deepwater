@@ -22,11 +22,13 @@ const flat = {
 test('parseOverview: flat field names', () => {
   const s = parseOverview(flat, { t: 1 });
   assert.equal(s.symbol, 'BTCUSDT');
-  assert.deepEqual(s.whale.long, { count: 42, usd: 120e6, entry: 64000.5, upnl: 3.5e6, winRate: 0.715 });
+  assert.deepEqual(s.whale.long, { count: 42, qty: null, usd: 120e6, entry: 64000.5, upnl: 3.5e6, profitCount: null, winRate: 0.715 });
   assert.equal(s.whale.short.winRate, 0.33);
   assert.equal(s.smart.short.usd, 11e6);
   assert.equal(s.smart.long.upnl, null);
-  assert.ok(s.unmatched.includes('updateTime'));
+  assert.equal(s.sourceT, 1730000000000);
+  assert.equal(s.t, 1730000000000, 'snapshot time is when Binance measured it');
+  assert.equal(s.format, 'generic');
 });
 
 test('parseOverview: nested shape with different names', () => {
@@ -103,8 +105,8 @@ test('diffSnapshots: entry jumping without matching trades is a roster change', 
   assert.equal(d.opensLong, 0);
 });
 
-test('diffSnapshots: long gaps are not attributed', () => {
-  const d = diffSnapshots(snap(0, 100, 10000, 5000), snap(60 * 60_000, 100, 20000, 5000, 100));
+test('diffSnapshots: gaps longer than 36 hours are not attributed', () => {
+  const d = diffSnapshots(snap(0, 100, 10000, 5000), snap(48 * 3_600_000, 100, 20000, 5000, 100));
   assert.equal(d.reason, 'gap');
   assert.equal(d.opensLong, 0);
 });
@@ -119,4 +121,67 @@ test('alignToBars: sums diffs per candle and leaves gaps empty', () => {
   assert.equal(rows[1].opensLong, 3000);
   assert.equal(rows[2].move, null, 'no snapshot in the third candle');
   assert.equal(rows[1].longShare, 13000 / 15000);
+});
+
+// Live response from Binance's Smart Money overview (BTCUSDT, October 2026), as returned to the worker's probe.
+const live = {
+  code: '000000', message: null, messageDetail: null, success: true,
+  data: {
+    symbol: 'BTCUSDT', totalPositions: 3217896093.5099983, totalTraders: 2125, longShortRatio: 0.3283,
+    longTraders: 860, longTradersQty: 9831.366, longTradersAvgEntryPrice: 86413.85249048,
+    longWhales: 243, longWhalesQty: 9083.041, longWhalesAvgEntryPrice: 86835.86094697,
+    shortTraders: 1265, shortTradersQty: 29948.934, shortTradersAvgEntryPrice: 76447.09686165,
+    shortWhales: 501, shortWhalesQty: 29116.53, shortWhalesAvgEntryPrice: 76310.96633239,
+    longProfitTraders: 172, shortProfitTraders: 806, longProfitWhales: 45, shortProfitWhales: 315,
+    updateTime: 1792737409498,
+  },
+};
+
+test('parseOverview: live Binance format', () => {
+  const s = parseOverview(live);
+  assert.equal(s.format, 'known');
+  assert.equal(s.symbol, 'BTCUSDT');
+  assert.equal(s.t, 1792737409498);
+  assert.deepEqual(s.whale.long, { count: 243, qty: 9083.041, usd: null, entry: 86835.86094697, upnl: null, profitCount: 45, winRate: 45 / 243 });
+  assert.deepEqual(s.smart.short, { count: 1265, qty: 29948.934, usd: null, entry: 76447.09686165, upnl: null, profitCount: 806, winRate: 806 / 1265 });
+  assert.deepEqual(s.unmatched.sort(), ['longShortRatio', 'totalTraders']);
+  assert.equal(pickCohort(s), 'whale');
+});
+
+test('summarize: prices the live format at the mark price', () => {
+  const s = { ...parseOverview(live), mark: 80000 };
+  const m = summarize(s);
+  assert.equal(m.longUsd, 9083.041 * 80000);
+  assert.equal(m.shortUsd, 29116.53 * 80000);
+  assert.equal(Math.round(m.longShare * 1000), Math.round((9083.041 / (9083.041 + 29116.53)) * 1000));
+  // Longs entered at 86,836 are under water at 80,000; shorts from 76,311 too.
+  assert.equal(Math.round(m.longUpnl), Math.round((80000 - 86835.86094697) * 9083.041));
+  assert.equal(Math.round(m.shortUpnl), Math.round(-(80000 - 76310.96633239) * 29116.53));
+  assert.ok(m.longUpnl < 0 && m.shortUpnl < 0);
+  // longShortRatio in the payload is the all-traders size ratio, which the parsed numbers reproduce.
+  const all = summarize(s, 'smart');
+  assert.equal(Math.round((all.longQty / all.shortQty) * 1e4) / 1e4, 0.3283);
+});
+
+test('diffSnapshots: live format, whales add longs at market over a day', () => {
+  const a = { ...parseOverview(live), mark: 80000 };
+  const b = structuredClone(a);
+  b.t = a.t + 23 * 3_600_000;
+  b.mark = 82000;
+  // 500 BTC more long, bought around 82,000: the entry moves exactly as averaging predicts.
+  const L = a.whale.long;
+  b.whale.long.qty = L.qty + 500;
+  b.whale.long.entry = (L.entry * L.qty + 82000 * 500) / (L.qty + 500);
+  const d = diffSnapshots(a, b);
+  assert.equal(d.roster, false);
+  assert.equal(Math.round(d.opensLong), 500 * 82000);
+  assert.equal(d.opensShort, 0);
+  assert.equal(Math.round(d.move), 500 * 82000);
+});
+
+test('diffSnapshots: identical Binance updates are not counted twice', () => {
+  const a = { ...parseOverview(live), mark: 80000 };
+  const d = diffSnapshots(a, { ...a, mark: 81000 });
+  assert.equal(d.reason, 'same update');
+  assert.equal(d.move, 0);
 });

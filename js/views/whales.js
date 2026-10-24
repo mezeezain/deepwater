@@ -194,7 +194,7 @@ export function whalesView(root, { go }) {
         },
       }, starred ? '★' : '☆')),
       h('th.pair', { scope: 'row' }, h('span.pair-name', ticker(r.symbol)),
-        r.cohort === 'smart' && h('span.chip.aligned', { title: 'Fewer than 10 whales on this pair: smart traders shown instead' }, 'S'),
+        r.cohort === 'smart' && h('span.chip.aligned', { title: 'Fewer than 10 whales on this pair: all smart-money traders shown instead' }, 'S'),
         sig && h(`span.chip.${r.signal}`, { title: sig[1] }, sig[0])),
       h('td', shareBar(r.whaleLong, 'Whales')),
       h('td', shareBar(r.crowdLong, 'Crowd')),
@@ -235,7 +235,11 @@ export function whalesView(root, { go }) {
   function renderSourceLine() {
     const n = smart?.rows.size ?? 0;
     if (smart?.source === 'demo') sourceLine.textContent = `Whale numbers: simulated exact data (demo) for ${n} pairs. Whale long % is by position value; crowd is all accounts.`;
-    else if (smart) sourceLine.textContent = `Whale numbers: exact, from your whale data server (${n} pairs). Pairs it doesn't track use Binance's top-trader ratio.`;
+    else if (smart) {
+      const newest = Math.max(0, ...[...smart.rows.values()].map((r) => r.t || 0));
+      const hrs = newest ? ((Date.now() - newest) / 3_600_000).toFixed(1) : null;
+      sourceLine.textContent = `Whale numbers: exact, from your whale data server (${n} pairs${hrs ? `, Binance updated ${hrs} h ago` : ''}). Pairs it doesn't track use Binance's top-trader ratio.`;
+    }
     else if (smartError) sourceLine.textContent = `Whale data server unreachable (${smartError}). Showing Binance's top-trader ratio instead.`;
     else sourceLine.textContent = "Whale numbers: Binance's top-trader long/short ratio. Connect a whale data server under Whale data for exact positions, entries and PnL.";
     sourceLine.dataset.state = smart ? 'exact' : smartError ? 'error' : 'ratio';
