@@ -185,3 +185,15 @@ test('diffSnapshots: identical Binance updates are not counted twice', () => {
   assert.equal(d.reason, 'same update');
   assert.equal(d.move, 0);
 });
+
+test('alignToBars: positions carry forward until the next update; moves do not', () => {
+  const ms = 300_000;
+  const bars = [0, 1, 2, 3].map((i) => ({ t: i * ms }));
+  const snaps = [snap(400_000, 100, 10000, 5000, 100)]; // one update, inside the second candle
+  const rows = alignToBars(snaps, bars, ms);
+  assert.equal(rows[0].net, null, 'nothing before the first snapshot');
+  assert.equal(rows[1].net, 5000);
+  assert.equal(rows[2].net, 5000, 'held until the next update');
+  assert.equal(rows[3].longEntry, 100);
+  assert.equal(rows[3].move, null, 'no move without a new update');
+});

@@ -266,7 +266,10 @@ export function tokenView(root, { symbol, go }) {
     const { entries } = data;
     const row = (label, value, cls = '') => h('div.fact-row', h('span', label), h(`strong.${cls}`, value));
     facts.replaceChildren(
-      h('div.fact', h('span.fact-label', 'Whales'), shareBar(w ?? 0.5, 'Whales')),
+      ...(data.exact?.latest?.longShare != null
+        ? [h('div.fact', h('span.fact-label', `${data.exact.latest.cohort === 'smart' ? 'Smart money' : 'Whales'} (Binance Smart Money, by size)`), shareBar(data.exact.latest.longShare, 'Whales'))]
+        : []),
+      h('div.fact', h('span.fact-label', data.exact ? 'Top traders (public ratio, by position)' : 'Whales (top traders, by position)'), shareBar(w ?? 0.5, 'Top traders')),
       h('div.fact', h('span.fact-label', 'Top accounts'), shareBar(last.smartLong ?? 0.5, 'Top accounts')),
       h('div.fact', h('span.fact-label', 'Crowd'), shareBar(last.crowdLong ?? 0.5, 'Crowd')),
       row('Open interest', last.oi != null ? fmtUsd(last.oi * last.c) : '–'),

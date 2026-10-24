@@ -246,10 +246,14 @@ export function setupCheck(bars, market, whales, { lookback = 12, levels = [], e
   // 2. Are whales adding, or just closing?
   const recent = whales.slice(from + 1);
   if (recent.some((w) => w.longUsd != null)) {
-    const opensL = recent.reduce((s, w) => s + w.opensLong, 0);
-    const opensS = recent.reduce((s, w) => s + w.opensShort, 0);
+    const opensL = recent.reduce((s, w) => s + (w.opensLong || 0), 0);
+    const opensS = recent.reduce((s, w) => s + (w.opensShort || 0), 0);
+    if (opensL === 0 && opensS === 0) {
+      items.push({ id: 'whales', label: 'No whale position changes in this window', state: 'na', detail: `Whales haven't added to either side in the last ${lookback} candles.` });
+    } else {
     const state = opensL > opensS * 1.2 ? 'good' : opensS > opensL * 1.2 ? 'bad' : 'warn';
     items.push({ id: 'whales', label: state === 'good' ? 'Whales are opening longs' : state === 'bad' ? 'Whales are opening shorts' : 'Whale opens are balanced', state, detail: `${entriesIn ? 'Whale' : 'Estimated whale'} opens: longs ${usd(opensL)}, shorts ${usd(opensS)}.` });
+    }
   } else {
     items.push({ id: 'whales', label: 'Whale data unavailable', state: 'na', detail: 'Binance has no top-trader data for this pair.' });
   }

@@ -275,7 +275,7 @@ export function diffSnapshots(prev, cur, { cohort, entryTol = 0.004, maxGapMs = 
  * Turn a pair's snapshot history into per-candle values aligned with `bars`.
  * Each candle gets the sum of moves/opens from snapshots taken inside it, the last net position,
  * long share and entries, and roster=true if any diff inside it was a roster change.
- * Candles with no snapshot get nulls, so charts show a gap rather than invented values.
+ * Position state carries forward until the next snapshot; candles before the first snapshot stay null.
  */
 export function alignToBars(snapshots, bars, ms) {
   const out = bars.map((b) => ({ t: b.t, move: null, opensLong: null, opensShort: null, net: null, longShare: null, longEntry: null, shortEntry: null, roster: false, cohort: null }));
@@ -302,6 +302,13 @@ export function alignToBars(snapshots, bars, ms) {
       row.opensLong = (row.opensLong ?? 0) + d.opensLong;
       row.opensShort = (row.opensShort ?? 0) + d.opensShort;
     }
+  }
+  // A snapshot describes open positions until Binance's next update, so carry the position state
+  // (not moves or opens, which happen once) forward to every later candle.
+  let held = null;
+  for (const row of out) {
+    if (row.net != null) held = row;
+    else if (held) Object.assign(row, { net: held.net, longShare: held.longShare, longEntry: held.longEntry, shortEntry: held.shortEntry, cohort: held.cohort });
   }
   return out;
 }

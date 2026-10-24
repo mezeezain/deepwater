@@ -123,7 +123,7 @@ export function multiChart(container, { bars, price = {}, panes = [], label = 'P
     legend(ctx, font, 12, pr.y + 12, [
       [new Date(hb.t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }), col.text],
       [`O ${fmtPrice(hb.o)} H ${fmtPrice(hb.h)} L ${fmtPrice(hb.l)} C ${fmtPrice(hb.c)}`, col.fg],
-    ], col.bg);
+    ], col.bg, 8 + plotW - 4);
 
     // ---- indicator panes
     panes.forEach((pane, k) => {
@@ -175,7 +175,7 @@ export function multiChart(container, { bars, price = {}, panes = [], label = 'P
         const v = s.values[idx];
         if (v != null) items.push([`${s.name ? s.name + ' ' : ''}${fmt(v)}`, cssVar(s.color)]);
       }
-      legend(ctx, font, 12, r.y + 11, items, col.bg);
+      legend(ctx, font, 12, r.y + 11, items, col.bg, 8 + plotW - 4);
     });
 
     // ---- crosshair
@@ -193,11 +193,14 @@ export function multiChart(container, { bars, price = {}, panes = [], label = 'P
     ctx.textAlign = 'center';
     const lastRect = rects.at(-1);
     const span = bars[n - 1].t - bars[0].t;
-    for (let g = 0; g <= 4; g++) {
-      const i = Math.round(((n - 1) * g) / 4);
+    // As many labels as fit without touching (2 on a phone, 5 on a wide screen).
+    const labels = Math.max(1, Math.min(4, Math.floor(plotW / 110)));
+    for (let g = 0; g <= labels; g++) {
+      const i = Math.round(((n - 1) * g) / labels);
       const d = new Date(bars[i].t);
       const text = span > 3 * 86_400_000 ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      ctx.fillText(text, Math.min(Math.max(x(i), 30), plotW - 20), lastRect.y + lastRect.h + 12);
+      const half = ctx.measureText(text).width / 2;
+      ctx.fillText(text, Math.min(Math.max(x(i), 8 + half), 8 + plotW - half), lastRect.y + lastRect.h + 12);
     }
     ctx.textAlign = 'left';
   }
@@ -310,11 +313,13 @@ function tag(ctx, text, x, y, fg, bg) {
   ctx.fillText(text, x + 1, y);
 }
 
-function legend(ctx, font, x, y, items, bg) {
+/** Items left to right; stops before an item would run past maxX (the price axis). */
+function legend(ctx, font, x, y, items, bg, maxX = Infinity) {
   let cx = x;
   ctx.font = `11px ${font}`;
-  for (const [text, color] of items) {
+  for (const [i, [text, color]] of items.entries()) {
     const w = ctx.measureText(text).width;
+    if (i > 0 && cx + w > maxX) break;
     ctx.fillStyle = bg;
     ctx.globalAlpha = 0.85;
     ctx.fillRect(cx - 3, y - 8, w + 6, 16);
