@@ -186,6 +186,7 @@ export function tokenView(root, { symbol, go }) {
         : whales;
       add('shift', {
         id: 'shift', label: `Whale moves${est}`, kind: 'hist', format: usd,
+        emptyText: ex ? "No changes yet: moves appear when Binance next updates its Smart Money data" : null,
         series: [
           { values: src.map((w) => w.shift), color: '--long', colorDown: '--short' },
           { kind: 'dots', values: src.map((w) => w.rosterChange), color: '--muted' },
@@ -193,6 +194,7 @@ export function tokenView(root, { symbol, go }) {
       });
       add('opens', {
         id: 'opens', label: `Whale opens${est}`, kind: 'hist', format: usd,
+        emptyText: ex ? 'No new positions yet: opens appear at the next Binance update' : null,
         series: [
           { name: 'Long', values: src.map((w) => w.opensLong), color: '--long' },
           { name: 'Short', values: src.map((w) => (w.opensShort == null ? null : -w.opensShort)), color: '--short', colorDown: '--short' },

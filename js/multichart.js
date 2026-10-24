@@ -88,7 +88,8 @@ export function multiChart(container, { bars, price = {}, panes = [], label = 'P
       ctx.lineTo(8 + plotW, ly);
       ctx.stroke();
       ctx.setLineDash([]);
-      tag(ctx, `${lv.label} ${fmtPrice(lv.price)}`, 12, ly, cssVar(lv.color), col.bg);
+      const text = `${lv.label} ${fmtPrice(lv.price)}`;
+      tag(ctx, text, 8 + plotW - ctx.measureText(text).width - 14, ly, cssVar(lv.color), col.bg);
     }
     for (const m of price.markers || []) {
       const i = indexOf(m.t);
@@ -129,6 +130,16 @@ export function multiChart(container, { bars, price = {}, panes = [], label = 'P
     panes.forEach((pane, k) => {
       const r = rects[k + 1];
       const vals = pane.series.filter((s) => s.kind !== 'dots').flatMap((s) => s.values.filter((v) => v != null && isFinite(v)));
+      if (pane.emptyText && !vals.some((v) => v !== 0)) {
+        ctx.strokeStyle = col.grid;
+        ctx.strokeRect(8.5, r.y + 0.5, plotW, r.h);
+        ctx.fillStyle = col.text;
+        ctx.textAlign = 'center';
+        ctx.fillText(pane.emptyText, 8 + plotW / 2, r.y + r.h / 2 + 6, plotW - 16);
+        ctx.textAlign = 'left';
+        legend(ctx, font, 12, r.y + 11, [[pane.label, col.text]], col.bg, 8 + plotW - 4);
+        return;
+      }
       let pmin, pmax;
       if (pane.kind === 'share') {
         pmin = 0;
