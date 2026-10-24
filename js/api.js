@@ -254,6 +254,64 @@ export async function getChartData(symbol, interval = '1h', limit = 300) {
   };
 }
 
+/**
+ * Longer history for the setups lab: up to 1,500 closed candles, top-trader and all-accounts long share
+ * for the last 30 days (all Binance keeps), and funding payments. Bars older than 30 days have no
+ * positioning, which the lab reports as "no whale data".
+ */
+export async function getLabData(symbol, interval = '1h') {
+  if (await isDemo()) {
+    const d = demo.chartData(symbol, interval, 500);
+    return { bars: d.bars.slice(0, -1), funding: d.funding, positioningFrom: d.bars[0].t };
+  }
+  const ms = CHART_INTERVALS[interval];
+  const [klines, whales, crowd, funding] = await Promise.all([
+    get('/fapi/v1/klines', { symbol, interval, limit: 1500 }, 60_000),
+    positioningHistory('/futures/data/topLongShortPositionRatio', symbol, interval),
+    positioningHistory('/futures/data/globalLongShortAccountRatio', symbol, interval),
+    get('/fapi/v1/fundingRate', { symbol, limit: 1000 }, 10 * 60_000).catch(() => []),
+  ]);
+  const slot = (ts) => Math.floor((+ts - 1) / ms) * ms;
+  const wBy = new Map(whales.map((r) => [slot(r.timestamp), +r.longAccount]));
+  const cBy = new Map(crowd.map((r) => [slot(r.timestamp), +r.longAccount]));
+  const now = Date.now();
+  const bars = klines
+    .filter((k) => k[0] + ms <= now) // closed candles only
+    .map((k) => ({
+      t: k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[7], takerBuy: +k[10],
+      whaleLong: wBy.get(k[0]) ?? null,
+      crowdLong: cBy.get(k[0]) ?? null,
+    }));
+  fillGaps(bars, ['whaleLong', 'crowdLong']);
+  const firstPos = bars.find((b) => b.whaleLong != null);
+  return {
+    bars,
+    funding: funding.map((r) => ({ t: +r.fundingTime, rate: +r.fundingRate })),
+    positioningFrom: firstPos?.t ?? null,
+  };
+}
+
+/** Positioning rows for the last 30 days, paged backwards 500 at a time. */
+async function positioningHistory(path, symbol, period) {
+  const from = Date.now() - 30 * 86_400_000 + 60_000;
+  const out = [];
+  let end = Date.now();
+  for (let page = 0; page < 10 && end > from; page++) {
+    let rows;
+    try {
+      rows = await get(path, { symbol, period, limit: 500, endTime: end }, 5 * 60_000);
+    } catch {
+      break; // older pages are refused once past 30 days; keep what we have
+    }
+    if (!rows.length) break;
+    out.push(...rows);
+    const earliest = Math.min(...rows.map((r) => +r.timestamp));
+    if (rows.length < 500 || earliest >= end) break;
+    end = earliest - 1;
+  }
+  return out;
+}
+
 /** Carry the last known value forward over short gaps (the newest candle often has no snapshot yet). */
 function fillGaps(bars, fields) {
   for (const f of fields) {

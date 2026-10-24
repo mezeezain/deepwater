@@ -414,3 +414,16 @@ h3 { margin: 0 0 6px; font: 600 13px/1.3 var(--font-body); color: var(--muted); 
 .wchip.neg { background: var(--short-soft); color: var(--short); }
 .cfg-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0 24px; }
 .freshness { margin-top: 4px; }
+
+/* Setups lab */
+#lab-pairs { width: 220px; max-width: 100%; }
+.grid .sub { color: var(--muted); font-size: 11.5px; font-weight: 400; }
+.grid tr.total th, .grid tr.total td { font-weight: 600; }
+.grid.lab tbody tr.total:first-child th, .grid.lab tbody tr.total:first-child td { border-top: 1px solid var(--line); }
+.verdict { margin: 0; font-size: 14px; max-width: 80ch; }
+.method { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 13px; color: var(--muted); max-width: 90ch; }
+@media (max-width: 600px) {
+  #lab-pairs { width: 100%; }
+  .toolbar .field.inline:has(#lab-pairs) { flex: 1 1 100%; }
+}
+.grid td.txt { text-align: left; }

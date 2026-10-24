@@ -25,6 +25,7 @@ Add `?demo` to the URL to use a simulated market. The app also switches to demo 
 | Charts | `#charts` | The pair page for the last pair you opened |
 | Liquidation map | `#liqmap-SOLUSDT` | Illustrative liquidation zones on both sides of each open interest increase, cleared when a wick trades through them, with an adjustable leverage cap, the live order book, walls (size vs typical, how long they've rested) and Smart Money whale entries |
 | Pump catcher | `#pumps` | Scans every USDT perpetual every 5 seconds, fires alerts and tracks each to a realised exit; shared log across devices, track record after costs, backtest (see below) |
+| Setups lab | `#setups` | Sweep reclaim, breakout retest and regime confluence replayed on up to 1,500 candles (15m/1h/4h) with real costs: paper win rate (TP1 touched) beside net win rate, profit factor and expectancy in R after fees, slippage and funding, split by whether Binance's top 20% leaned the trade's way. Latest setups with Smart Money context. See "Setups lab" |
 | Signal page | `#sig-<pair>-<time>` | Chart around one alert with alert, peak and dip lines, why it fired, and how it closed |
 | Liquidations | `#liquidations` | A live sample of forced liquidations by pair, long vs short (Binance's stream sends at most one per pair per second) |
 | Heatmap | `#heatmap` | Pairs sized by volume, coloured by 24h change or funding |
@@ -194,6 +195,27 @@ These cover:
 - the indicators, the Smart Money parsing and snapshot diffs, the whale context and filter;
 - the backtest replay.
 
+## Setups lab
+
+`js/setups.js` (pure functions) finds three common setups on closed candles and plays each forward like a real account:
+
+| Setup | Trigger | Stop | Targets |
+|---|---|---|---|
+| Sweep reclaim | Wick beyond the previous 19-bar low/high, close back inside, taker share ≥ 53% the trade's way, volume ≥ 1.2× the 20-bar average | 0.5 × ATR(14) beyond the wick | TP1 0.75R, target 1.5R |
+| Breakout retest | Close beyond the 19-bar range and outside Keltner (EMA 20 ± 2 × ATR 10), volume ≥ 1.5× | 1.5 × ATR(14) beyond the level | TP1 1R, target 2R |
+| Regime confluence | SuperTrend (10, 3) flips, Kalman slope, MFI(14) and taker share agree | SuperTrend line (assumed) | TP1 1R, target 2R |
+
+Execution: market entries at the next open (0.05% taker), retest limit orders filled only when traded 0.02% through (0.02% maker), half off at TP1 and stop to entry, stops and 48-bar time exits at 0.05% + 0.03% slippage, funding actually charged while open, stop first when a candle touches both. **Paper win** counts TP1 touched before the stop with no costs, the way signal dashboards usually badge a "target hit"; **net win** counts trades that made money after costs.
+
+Each trade is tagged with the top 20% vs crowd gap at the signal candle's close (*with* ≥ +5 points the trade's way, *against* ≤ −5). Binance keeps that history for 30 days only, so the split uses the last 30 days. The page states when a sample is too small (under 30 trades) and shows a 95% range for expectancy.
+
+For a bigger sample, run on the server:
+
+```
+node tools/setups.mjs                 # top 40 pairs, 1h
+node tools/setups.mjs --pairs 80 --tf 4h
+```
+
 ## Limits
 
 - **Two different "whale" groups.** *Smart Money whales* (whale data server) are Binance's large, consistently profitable accounts, with exact positions. The public `topLongShortPositionRatio` is Binance's **top 20% of accounts by margin balance**, thousands of accounts on major pairs and many of them hedging. The app labels the second group "Top 20%" (and T20 in the table).
@@ -229,6 +251,8 @@ js/app.js               hash router and navigation
 js/views/*.js           one file per screen; each returns a cleanup function
 worker/catcher.mjs      Node worker: round-the-clock scanning, shared signal log API, Telegram alerts
 tools/backtest.mjs      downloads Binance history and runs the backtest
+js/setups.js            setups lab: indicators, setups, realistic execution, whale split (pure functions)
+tools/setups.mjs        setups lab over many pairs, from a server
 deploy/setup.sh         one-step VPS setup: both servers, firewall, DuckDNS, HTTPS, weekly backtest
 worker/smartmoney.mjs   whale data server: polls Smart Money data, stores snapshots, serves the app
 test/*.test.mjs         engine and indicator tests (node --test)
