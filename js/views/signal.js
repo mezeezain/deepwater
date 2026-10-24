@@ -4,7 +4,7 @@ import { demoSignalCandles } from '../demo-market.js';
 import { priceChart } from '../chart.js';
 import { getChartData } from '../api.js';
 import { marketLayers, whaleLayers, liquidationLevels, setupCheck } from '../indicators.js';
-import { h, ticker, fmtPrice, fmtPct, signClass } from '../util.js';
+import { h, ticker, fmtPrice, fmtPct, fmtUsd, signClass } from '../util.js';
 import { fmtDuration, fmtDip } from './pumps.js';
 
 export function signalView(root, { id, go }) {
@@ -79,6 +79,16 @@ export function signalView(root, { id, go }) {
         row('Whales long', sig.whaleLong == null ? '–' : `${Math.round(sig.whaleLong * 100)}%`),
         row('Crowd long', sig.crowdLong == null ? '–' : `${Math.round(sig.crowdLong * 100)}%`),
         row('Gap', sig.gap == null ? '–' : `${sig.gap > 0 ? '+' : ''}${Math.round(sig.gap)} pts`, sig.gap > cfg.minGap || sig.crowdLong < cfg.squeezeCrowdLong),
+        ...(sig.whale
+          ? [
+              h('h3.why-sub', 'Binance Smart Money at the alert'),
+              row(sig.whale.cohort === 'smart' ? 'Smart money long, by size' : 'Whales long, by size', `${Math.round(sig.whale.longShare * 100)}%`, sig.whale.agrees),
+              row('Whale long entry', sig.whale.longEntry ? `${fmtPrice(sig.whale.longEntry)} (${fmtPct(sig.whale.distLong)})` : '–', sig.whale.nearLongEntry ? true : null),
+              row('Whale short entry', sig.whale.shortEntry ? `${fmtPrice(sig.whale.shortEntry)} (${fmtPct(sig.whale.distShort)})` : '–'),
+              row('Whale shorts', sig.whale.shortUpnl == null ? '–' : sig.whale.shortsUnderwater ? `losing ${fmtUsd(-sig.whale.shortUpnl)}` : `up ${fmtUsd(sig.whale.shortUpnl)}`, sig.whale.shortsUnderwater),
+              sig.whale.ageH != null && h('p.note', `Binance data was ${sig.whale.ageH.toFixed(1)} hours old when this fired.`),
+            ]
+          : [h('p.note', 'No Binance Smart Money data for this alert (connect a whale data server on the Whales page).')]),
       );
       life.replaceChildren(
         row('Time to peak', fmtDuration(sig.peakT - sig.alertT)),

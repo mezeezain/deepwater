@@ -1,6 +1,6 @@
 // The browser's single pump catcher instance. Starts on first use and keeps
 // scanning while you move between screens.
-import { get, isDemo } from './api.js';
+import { get, isDemo, getSmartOverview } from './api.js';
 import { createBinanceSource } from './binance.js';
 import { createDemoMarket, demoHistory } from './demo-market.js';
 import { Catcher } from './catcher.js';
@@ -26,7 +26,18 @@ async function boot() {
     },
     save: (signals) => store.set(key, signals),
   };
-  const catcher = new Catcher({ source, store: signalStore, cfg: store.get('catcher-cfg', {}) });
+  // Whale context from Binance Smart Money (your whale data server, or simulated in demo mode).
+  const whaleLookup = async (symbol) => {
+    const sum = (await getSmartOverview())?.rows.get(symbol)?.shown ?? null;
+    if (!demo || !sum?.mark) return sum;
+    // The demo scanner runs its own simulated prices; rescale the simulated whale book to them
+    // so entries sit at sensible distances. Live data never needs this.
+    const price = catcher.tickers.get(symbol)?.price;
+    if (!price) return sum;
+    const k = price / sum.mark;
+    return { ...sum, mark: price, longEntry: sum.longEntry * k, shortEntry: sum.shortEntry * k, longQty: sum.longQty / k, shortQty: sum.shortQty / k };
+  };
+  const catcher = new Catcher({ source, store: signalStore, cfg: store.get('catcher-cfg', {}), whaleLookup });
   catcher.demo = demo;
   catcher.on('alert', notify);
   await catcher.start();

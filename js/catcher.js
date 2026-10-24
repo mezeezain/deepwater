@@ -1,6 +1,6 @@
 // Scanner loop around engine.js. Environment-agnostic: the browser and the Node worker
 // pass in a data source, a store for signals, and listen for events.
-import { DEFAULTS, screen, orderFlow, confirm, createSignal, updateSignal, replayCandles, inCooldown } from './engine.js';
+import { DEFAULTS, screen, orderFlow, confirm, createSignal, updateSignal, replayCandles, inCooldown, whaleContext } from './engine.js';
 
 const EVAL_MS = 5000;
 const SAMPLE_MS = 5000;
@@ -10,8 +10,13 @@ const MAX_CHECKS = 6; // confirmation lookups in flight at once
 const KEEP_DAYS = 30;
 
 export class Catcher {
-  constructor({ source, store, cfg = {}, now = () => Date.now() }) {
+  /**
+   * whaleLookup (optional): async symbol -> Binance Smart Money summary or null. Its result is attached
+   * to each alert as context and, if cfg.requireWhaleBias is on, can hold an alert back.
+   */
+  constructor({ source, store, cfg = {}, now = () => Date.now(), whaleLookup = null }) {
     this.source = source;
+    this.whaleLookup = whaleLookup;
     this.store = store;
     this.cfg = { ...DEFAULTS, ...cfg };
     this.now = now;
@@ -185,7 +190,15 @@ export class Catcher {
       const tk = this.tickers.get(symbol);
       const sc = screen(tk, this.price5mAgo(symbol), this.cfg);
       if (res.pass && sc.pass && !inCooldown(symbol, this.signals, this.now(), this.cfg)) {
+        const whale = await this.whaleAt(symbol, tk.price);
+        if (this.cfg.requireWhaleBias && whale && !whale.agrees) {
+          // Held back by the optional whale filter; show why in "close to firing".
+          Object.assign(c, { checks: [...res.checks, { id: 'whale', label: 'Whale bias', value: whale.longShare, ok: false }], pass: false });
+          return;
+        }
+        if (inCooldown(symbol, this.signals, this.now(), this.cfg)) return;
         const sig = createSignal({ symbol, price: tk.price, t: this.now(), rise: sc.rise, impulse: sc.impulse, ctx, gap: res.gap });
+        sig.whale = whale;
         this.signals.unshift(sig);
         this.candidates.delete(symbol);
         this.save();
@@ -196,6 +209,17 @@ export class Catcher {
     } finally {
       this.inFlight.delete(symbol);
       this.emit('change');
+    }
+  }
+
+  /** Whale context at `price`, or null when no lookup is set, it fails, or it takes over 3 seconds. */
+  async whaleAt(symbol, price) {
+    if (!this.whaleLookup) return null;
+    try {
+      const sum = await Promise.race([this.whaleLookup(symbol), new Promise((r) => setTimeout(() => r(null), 3000))]);
+      return whaleContext(sum, price, this.now());
+    } catch {
+      return null;
     }
   }
 

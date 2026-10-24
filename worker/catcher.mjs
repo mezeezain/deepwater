@@ -4,6 +4,7 @@
 //
 //   TELEGRAM_BOT_TOKEN=123:abc TELEGRAM_CHAT_ID=-100123 node worker/catcher.mjs
 //   node worker/catcher.mjs --demo          # simulated market, no network
+//   WHALE_SERVER=http://localhost:8787      # whale data server for alert context (default; empty to turn off)
 //
 // Optional: SIGNALS_FILE (default worker/signals.json), CATCHER_CONFIG='{"minRise":5}'
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
@@ -63,7 +64,23 @@ const store = {
 };
 
 const source = demo ? createDemoMarket() : createBinanceSource({ get });
-const catcher = new Catcher({ source, store, cfg });
+// Whale context from your whale data server (worker/smartmoney.mjs), if one is running.
+const WHALE_SERVER = (process.env.WHALE_SERVER ?? 'http://localhost:8787').replace(/\/+$/, '');
+let whaleCache = { at: 0, rows: null };
+async function whaleLookup(symbol) {
+  if (!WHALE_SERVER) return null;
+  if (Date.now() - whaleCache.at > 60_000) {
+    try {
+      const res = await fetch(`${WHALE_SERVER}/api/overview`);
+      whaleCache = { at: Date.now(), rows: res.ok ? new Map((await res.json()).rows.map((r) => [r.symbol, r.shown])) : null };
+    } catch {
+      whaleCache = { at: Date.now(), rows: null };
+    }
+  }
+  return whaleCache.rows?.get(symbol) ?? null;
+}
+
+const catcher = new Catcher({ source, store, cfg, whaleLookup });
 
 const name = (s) => s.symbol.replace(/USDT$/, '');
 const pct = (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`;
@@ -90,7 +107,12 @@ catcher.on('alert', (s) => {
     `🚀 <b>${name(s)}</b> pump alert\n` +
       `Price <code>${px(s.alertPrice)}</code> · ${pct(s.riseFromLow)} off 24h low · ${pct(s.impulse)} in 5m\n` +
       `Volume ${s.rvol?.toFixed(1)}× · Taker buys ${Math.round(s.takerBuy * 100)}% · OI ${pct(s.oiChange)}\n` +
-      `Whales ${Math.round(s.whaleLong * 100)}% long vs crowd ${Math.round(s.crowdLong * 100)}%`,
+      `Whales ${Math.round(s.whaleLong * 100)}% long vs crowd ${Math.round(s.crowdLong * 100)}%` +
+      (s.whale
+        ? `\nSmart Money whales ${Math.round(s.whale.longShare * 100)}% long` +
+          (s.whale.shortsUnderwater ? ` · whale shorts losing $${Math.round(-s.whale.shortUpnl).toLocaleString('en-US')}` : '') +
+          (s.whale.nearLongEntry ? ' · at whale long entry' : '')
+        : ''),
   );
 });
 

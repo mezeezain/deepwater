@@ -1,7 +1,7 @@
 // Pump catcher: live alerts from every USDT perpetual, each tracked until the move ends.
 import { getCatcher, saveConfig, alertPrefs, beep } from '../catcher-app.js';
 import { DEFAULTS, stats } from '../engine.js';
-import { h, ticker, fmtPrice, fmtPct, fmtAgo, signClass, csv, copyText, toast, store } from '../util.js';
+import { h, ticker, fmtPrice, fmtPct, fmtUsd, fmtAgo, signClass, csv, copyText, toast, store } from '../util.js';
 
 export const fmtDip = (d) => (d > -0.05 ? '0.0%' : fmtPct(d));
 
@@ -106,6 +106,8 @@ export function pumpsView(root, { go }) {
               if (Number.isFinite(v)) saveConfig(catcher, { [key]: v });
             } }))),
         h('label.check', h('input#cfg-edge', { type: 'checkbox', checked: cfg.requireEdge, onchange: (e) => saveConfig(catcher, { requireEdge: e.target.checked }) }), 'Require positioning edge'),
+        h('label.check', { title: 'Needs exact whale data (whale data server). Skips alerts where Binance Smart Money whales lean short and their shorts are not losing. Pairs without whale data are never blocked.' },
+          h('input#cfg-whale', { type: 'checkbox', checked: cfg.requireWhaleBias, onchange: (e) => saveConfig(catcher, { requireWhaleBias: e.target.checked }) }), 'Only alert when whale bias agrees'),
       ),
       h('div.controls',
         h('label.check', h('input#alert-sound', { type: 'checkbox', checked: prefs.sound, onchange: (e) => {
@@ -174,9 +176,10 @@ export function pumpsView(root, { go }) {
         th('dip', 'Dip before peak', 'Lowest point between the alert and the best gain'),
         th(null, 'Fuel at alert', 'Volume spike, taker buy share and open interest change when it fired'),
         th('gap', 'Gap', 'Whale long % minus crowd long % at the alert'),
+        th(null, 'Whales', 'Binance Smart Money whales at the alert price (needs the whale data server)'),
         th(null, 'Status'),
       )),
-      h('tbody', visible.length ? visible.map(row) : h('tr', h('td.empty', { colSpan: 9 }, emptyText()))),
+      h('tbody', visible.length ? visible.map(row) : h('tr', h('td.empty', { colSpan: 10 }, emptyText()))),
     ));
 
     renderNear();
@@ -202,6 +205,7 @@ export function pumpsView(root, { go }) {
       h(`td.num.${s.dip <= -0.05 ? 'down' : ''}`, fmtDip(s.dip)),
       h('td.num.muted', fuel(s)),
       h('td.num', s.gap == null ? '–' : `${s.gap > 0 ? '+' : ''}${Math.round(s.gap)}`),
+      h('td', whaleChip(s.whale)),
       h('td', h(`span.status.${s.status.toLowerCase()}`, { title: s.closeReason || 'Still following this move' }, s.status === 'TRACKING' ? 'Tracking' : 'Closed')),
     );
   }
@@ -229,11 +233,25 @@ export function pumpsView(root, { go }) {
       ))));
   }
 
+  function whaleChip(w) {
+    if (!w) return h('span.muted', '–');
+    const title = [
+      `Whales ${Math.round(w.longShare * 100)}% long by size`,
+      w.longEntry && `long entry ${fmtPrice(w.longEntry)} (${fmtPct(w.distLong)} away)`,
+      w.shortEntry && `short entry ${fmtPrice(w.shortEntry)}${w.shortsUnderwater ? `, shorts losing ${fmtUsd(-w.shortUpnl)}` : ''}`,
+      w.ageH != null && `Binance data ${w.ageH.toFixed(1)} h old`,
+    ].filter(Boolean).join(' · ');
+    if (w.shortsUnderwater) return h('span.wchip.good', { title }, `Shorts −${fmtUsd(-w.shortUpnl)}`);
+    if (w.nearLongEntry) return h('span.wchip.good', { title }, 'At long entry');
+    return h(`span.wchip.${w.agrees ? 'good' : 'bad'}`, { title }, `${Math.round(w.longShare * 100)}% long`);
+  }
+
   const shortLabel = (x) => ({
     rvol: `Vol ${x.value?.toFixed(1)}×`,
     cvd: `Buys ${Math.round((x.value ?? 0) * 100)}%`,
     oi: `OI ${x.value == null ? '–' : fmtPct(x.value)}`,
     edge: x.value == null ? 'Gap –' : `Gap ${x.value > 0 ? '+' : ''}${Math.round(x.value)}`,
+    whale: `Whales ${Math.round((x.value ?? 0) * 100)}% long`,
   })[x.id];
 
   async function exportCsv() {
@@ -250,6 +268,10 @@ export function pumpsView(root, { go }) {
       { label: 'taker_buy_share', get: (s) => s.takerBuy?.toFixed(3) },
       { label: 'oi_change_pct', get: (s) => s.oiChange?.toFixed(2) },
       { label: 'whale_crowd_gap', get: (s) => s.gap?.toFixed(1) },
+      { label: 'sm_whale_long_share', get: (s) => s.whale?.longShare?.toFixed(3) },
+      { label: 'sm_whale_shorts_underwater', get: (s) => (s.whale ? String(s.whale.shortsUnderwater) : '') },
+      { label: 'sm_whale_short_upnl_usd', get: (s) => (s.whale?.shortUpnl != null ? Math.round(s.whale.shortUpnl) : '') },
+      { label: 'sm_whale_long_entry_dist_pct', get: (s) => s.whale?.distLong?.toFixed(2) },
       { label: 'status', get: (s) => s.status },
       { label: 'close_reason', get: (s) => s.closeReason || '' },
     ]);

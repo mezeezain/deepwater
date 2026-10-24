@@ -387,3 +387,9 @@ h3 { margin: 0 0 6px; font: 600 13px/1.3 var(--font-body); color: var(--muted); 
 .smart-table th[scope='row'] { text-align: left; font-weight: 500; }
 .smart-table tr.shown th[scope='row'] { color: var(--whale); font-weight: 650; }
 .smart-table .muted { font-size: 11.5px; }
+
+/* Whale context on pump alerts */
+.wchip { font: 500 11.5px/1 var(--font-data); padding: 4px 6px; border-radius: 4px; white-space: nowrap; }
+.wchip.good { background: var(--long-soft); color: var(--long); }
+.wchip.bad { background: var(--short-soft); color: var(--short); }
+.why-sub { margin: 10px 0 0; }

@@ -22,6 +22,7 @@ export const DEFAULTS = {
   trailGiveBack: 0.45, // close after giving back this share of the best rise
   maxTrackHours: 72,
   cooldownMin: 60, // no new alert on the same pair for this long after one closes
+  requireWhaleBias: false, // optional: skip alerts when Binance Smart Money whales lean the other way
 };
 
 const pct = (a, b) => ((a - b) / b) * 100;
@@ -158,6 +159,41 @@ export function inCooldown(symbol, signals, t, cfg = DEFAULTS) {
 }
 
 /** Summary numbers for a list of signals. */
+/**
+ * Whale positioning at the alert price, from a Binance Smart Money summary (smartmoney.summarize output).
+ * Context only: Binance recalculates this data infrequently, so it describes standing positions,
+ * not what whales did in the last few minutes.
+ *   shortsUnderwater  price is above the whales' average short entry, so their shorts are losing (squeeze fuel)
+ *   nearLongEntry     price within 2% of the whales' average long entry
+ *   agrees            whales lean long, or their shorts are under water: either favours a move up
+ */
+export function whaleContext(sum, price, now = Date.now()) {
+  if (!sum || !(price > 0) || sum.longShare == null) return null;
+  const { longQty, shortQty, longEntry, shortEntry, longShare } = sum;
+  const longUpnl = longQty > 0 && longEntry > 0 ? (price - longEntry) * longQty : null;
+  const shortUpnl = shortQty > 0 && shortEntry > 0 ? (shortEntry - price) * shortQty : null;
+  const distLong = longEntry > 0 ? ((price - longEntry) / longEntry) * 100 : null;
+  const distShort = shortEntry > 0 ? ((price - shortEntry) / shortEntry) * 100 : null;
+  const shortsUnderwater = shortUpnl != null && shortUpnl < 0;
+  const nearLongEntry = distLong != null && Math.abs(distLong) <= 2;
+  return {
+    cohort: sum.cohort,
+    longShare,
+    longEntry: longEntry ?? null,
+    shortEntry: shortEntry ?? null,
+    distLong,
+    distShort,
+    longUpnl,
+    shortUpnl,
+    shortsUnderwater,
+    nearLongEntry,
+    leaning: longShare >= 0.6 ? 'long' : longShare <= 0.4 ? 'short' : 'mixed',
+    agrees: longShare >= 0.5 || shortsUnderwater,
+    updatedAt: sum.t ?? null,
+    ageH: sum.t ? (now - sum.t) / 3_600_000 : null,
+  };
+}
+
 export function stats(signals) {
   const done = signals.filter((s) => s.rise != null);
   const hit = (n) => done.filter((s) => s.rise >= n).length;

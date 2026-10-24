@@ -125,6 +125,13 @@ After an alert, the signal is tracked:
 - **Dip before peak:** the lowest point between the alert and that best gain. A drawdown *after* the peak doesn't change it.
 - **Closes** when price falls 5% below the alert, gives back 45% of a gain over 8%, or after 72 hours.
 
+**Whale context (with a whale data server).** Each alert records where Binance Smart Money whales stood at the alert price:
+- their long share by size;
+- the distance to their average long and short entries;
+- whether their shorts are losing money there (squeeze fuel).
+
+This shows in the **Whales** column, on the signal page and in Telegram alerts. It's context, not part of the trigger, because Binance recalculates this data infrequently. An optional setting, **Only alert when whale bias agrees** (off by default), skips alerts where whales lean short and their shorts aren't losing. Pairs without whale data are never blocked. Compare hit rates before relying on it.
+
 Every threshold can be changed under **Settings** on the page. The defaults are a reasonable starting point, not tuned values. The page shows the 30-day hit rate (share of alerts that reached +10%) and median rise and dip, so you can see whether a change helps.
 
 Cost: screening uses the all-market ticker stream (one WebSocket). Only pairs that pass gate 1 trigger REST lookups: 4 light requests, at most once a minute per pair and 6 at a time.
@@ -144,6 +151,9 @@ TELEGRAM_BOT_TOKEN=123456:ABC... TELEGRAM_CHAT_ID=-1001234567890 node worker/cat
 
 # Custom thresholds
 CATCHER_CONFIG='{"minRise":5,"minRvol":3}' node worker/catcher.mjs
+
+# Whale context in Telegram alerts comes from the whale data server (default http://localhost:8787)
+WHALE_SERVER=http://localhost:8787 node worker/catcher.mjs
 ```
 
 To get a bot token, message @BotFather on Telegram. To get the chat ID, add the bot to your channel and send a message, then open `https://api.telegram.org/bot<token>/getUpdates`. Signals are saved to `worker/signals.json`. Run it with `pm2`, `systemd` or a Docker container on a VPS in a region Binance serves.
