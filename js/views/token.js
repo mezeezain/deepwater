@@ -10,12 +10,12 @@ const share = (v) => `${Math.round(v * 100)}%`;
 
 // Each layer: a pane under the price chart, or an overlay on the price chart.
 export const LAYERS = [
-  { id: 'gap', group: 'Whales', label: 'Whales vs crowd', hint: 'Long share of top traders (by position) against all accounts' },
-  { id: 'shift', group: 'Whales', label: 'Whale moves', hint: 'Change in estimated whale net exposure. Grey dots: likely ranking change, not a trade' },
-  { id: 'opens', group: 'Whales', label: 'Whale opens', hint: 'Newly added whale exposure only, closures excluded (estimate)' },
-  { id: 'net', group: 'Whales', label: 'Whale net position', hint: 'Estimated whale longs minus shorts' },
-  { id: 'entries', group: 'Whales', label: 'Whale entry lines', overlay: true, hint: 'Estimated average entry of whale longs and shorts in this window' },
-  { id: 'flow', group: 'Market', label: 'Net longs / shorts', hint: 'Open interest change split by which side was aggressive (estimate)' },
+  { id: 'gap', group: 'Whales', label: 'Whales vs crowd', hint: 'Exact Binance Smart Money whales (by size) when available, plus Binance’s top 20% of accounts by margin balance (by position) and all accounts' },
+  { id: 'shift', group: 'Whales', label: 'Whale moves', hint: 'Exact from Binance Smart Money updates. Without that data: top-20% tilt × total open interest, an estimate that mostly follows open interest. Grey dots: group membership changed, not a trade' },
+  { id: 'opens', group: 'Whales', label: 'Whale opens', hint: 'New positions only, closures excluded. Exact from Smart Money; otherwise a top-20% tilt × open interest estimate' },
+  { id: 'net', group: 'Whales', label: 'Whale net position', hint: 'Whale longs minus shorts. Exact from Smart Money; otherwise a top-20% tilt × open interest estimate' },
+  { id: 'entries', group: 'Whales', label: 'Whale entry lines', overlay: true, hint: 'Average entry of Smart Money whale longs and shorts (only shown with exact data)' },
+  { id: 'flow', group: 'Market', label: 'OI by aggressor', hint: 'Every new contract opens a long and a short. This assigns each open interest change to the aggressive (taker) side, so it shows who pushed, not who is now positioned. Estimate' },
   { id: 'cvd', group: 'Market', label: 'CVD', hint: 'Cumulative taker buy minus taker sell volume' },
   { id: 'oi', group: 'Market', label: 'Open interest', hint: 'Open contracts, valued in USDT' },
   { id: 'liq', group: 'Market', label: 'Liquidations', hint: 'Estimated forced closes: sharp OI drop on a wide, one-sided candle' },
@@ -45,6 +45,7 @@ export function tokenView(root, { symbol, go }) {
   const intervalBar = h('div.lenses', { role: 'tablist', 'aria-label': 'Candle interval' });
   const layerBar = h('div.layer-bar');
   const chartBox = h('div.chart.multi');
+  const freshness = h('p.note.freshness');
   const checks = h('div.checks-list');
   const facts = h('div.facts');
   const moves = h('div.moves');
@@ -55,7 +56,7 @@ export function tokenView(root, { symbol, go }) {
   root.replaceChildren(
     h('button.back', { onclick: () => go('whales') }, '← All pairs'),
     h('section.panel', h('div.token-top', head, h('div.toolbar-right', h('button.btn.ghost', { onclick: () => go('liqmap', symbol) }, 'Liquidation map →'), starBtn))),
-    h('section.panel', h('div.toolbar', h('div.title-row', h('h2', 'Chart'), sourceTag), intervalBar), layerBar, chartBox),
+    h('section.panel', h('div.toolbar', h('div.title-row', h('h2', 'Chart'), sourceTag), intervalBar), layerBar, chartBox, freshness),
     h('section.panel', h('h2', 'Smart money positions'), smartBox),
     h('div.split',
       h('section.panel.grow', h('h2', 'Setup check'), h('p.note', 'Four questions to ask before trusting a move, answered from the last 12 candles.'), checks),
@@ -137,6 +138,7 @@ export function tokenView(root, { symbol, go }) {
         }
       }
       renderChart();
+      renderFreshness();
       renderSmart();
       renderChecks();
       renderFacts();
@@ -162,7 +164,8 @@ export function tokenView(root, { symbol, go }) {
     const { bars, market, whales, entries, exact } = data;
     const panes = [];
     const ex = exact?.aligned;
-    const est = ex ? '' : ' (est.)';
+    // Without exact Smart Money data these layers are top-20% tilt × total open interest: say so in the name.
+    const name = (exact, estimate) => (ex ? exact : estimate);
     sourceTag.textContent = ex ? (exact.source === 'demo' ? 'Whale layers: exact (simulated)' : 'Whale layers: exact') : 'Whale layers: estimated';
     sourceTag.dataset.state = ex ? 'exact' : 'est';
     const add = (id, pane) => layers.has(id) && panes.push(pane);
@@ -176,7 +179,7 @@ export function tokenView(root, { symbol, go }) {
             { name: 'Crowd', values: bars.map((b) => b.crowdLong), color: '--crowd' },
           ]
         : [
-            { name: 'Whales', values: bars.map((b) => b.whaleLong ?? b.smartLong), color: '--whale', width: 2 },
+            { name: 'Top 20%', values: bars.map((b) => b.whaleLong ?? b.smartLong), color: '--whale', width: 2 },
             { name: 'Crowd', values: bars.map((b) => b.crowdLong), color: '--crowd' },
           ],
     });
@@ -185,7 +188,7 @@ export function tokenView(root, { symbol, go }) {
         ? ex.map((a) => ({ shift: a.move, opensLong: a.opensLong, opensShort: a.opensShort == null ? null : a.opensShort, net: a.net, rosterChange: a.roster }))
         : whales;
       add('shift', {
-        id: 'shift', label: `Whale moves${est}`, kind: 'hist', format: usd,
+        id: 'shift', label: name('Whale moves', 'Top-20% tilt × OI, change (est.)'), kind: 'hist', format: usd,
         emptyText: ex ? "No changes yet: moves appear when Binance next updates its Smart Money data" : null,
         series: [
           { values: src.map((w) => w.shift), color: '--long', colorDown: '--short' },
@@ -193,17 +196,17 @@ export function tokenView(root, { symbol, go }) {
         ],
       });
       add('opens', {
-        id: 'opens', label: `Whale opens${est}`, kind: 'hist', format: usd,
+        id: 'opens', label: name('Whale opens', 'Top-20% tilt × OI, increases (est.)'), kind: 'hist', format: usd,
         emptyText: ex ? 'No new positions yet: opens appear at the next Binance update' : null,
         series: [
           { name: 'Long', values: src.map((w) => w.opensLong), color: '--long' },
           { name: 'Short', values: src.map((w) => (w.opensShort == null ? null : -w.opensShort)), color: '--short', colorDown: '--short' },
         ],
       });
-      add('net', { id: 'net', label: `Whale net position${est}`, kind: 'step', format: usd, series: [{ values: src.map((w) => w.net), color: '--long', colorDown: '--short', width: 2 }] });
+      add('net', { id: 'net', label: name('Whale net position', 'Top-20% tilt × OI (est.)'), kind: 'step', format: usd, series: [{ values: src.map((w) => w.net), color: '--long', colorDown: '--short', width: 2 }] });
     }
     add('flow', {
-      id: 'flow', label: 'Net longs / shorts (est.)', kind: 'line', format: usd,
+      id: 'flow', label: 'OI by aggressor: longs / shorts (est.)', kind: 'line', format: usd,
       series: [
         { name: 'Longs', values: market.map((m) => m.netLongs), color: '--long' },
         { name: 'Shorts', values: market.map((m) => m.netShorts), color: '--short' },
@@ -229,10 +232,8 @@ export function tokenView(root, { symbol, go }) {
       const who = exact.latest.cohort === 'smart' ? 'Smart money' : 'Whale';
       if (exact.latest.longEntry) levels.push({ price: exact.latest.longEntry, label: `${who} long entry`, color: '--long' });
       if (exact.latest.shortEntry) levels.push({ price: exact.latest.shortEntry, label: `${who} short entry`, color: '--short' });
-    } else if (layers.has('entries') && hasWhales) {
-      if (entries.long) levels.push({ price: entries.long, label: 'Whale long entry est.', color: '--long' });
-      if (entries.short) levels.push({ price: entries.short, label: 'Whale short entry est.', color: '--short' });
     }
+    // No estimated entry lines: an average of OI-scaled changes isn't anyone's real cost basis.
     const markers = [];
     if (layers.has('absorb')) {
       market.forEach((m) => {
@@ -251,8 +252,9 @@ export function tokenView(root, { symbol, go }) {
       : data.whales;
     const items = setupCheck(data.bars, data.market, whalesForCheck, {
       levels: data.levels,
-      entries: ex ? { long: ex.latest.longEntry, short: ex.latest.shortEntry } : null,
+      entries: ex ? { long: ex.latest.longEntry, short: ex.latest.shortEntry } : { long: null, short: null },
       whaleShare: ex ? ex.latest.longShare : null,
+      whaleName: ex ? 'Whales' : 'Top 20% accounts',
     });
     const icon = { good: '✓', warn: '!', bad: '✕', na: '–' };
     checks.replaceChildren(...(items.length
@@ -271,8 +273,8 @@ export function tokenView(root, { symbol, go }) {
       ...(data.exact?.latest?.longShare != null
         ? [h('div.fact', h('span.fact-label', `${data.exact.latest.cohort === 'smart' ? 'Smart money' : 'Whales'} (Binance Smart Money, by size)`), shareBar(data.exact.latest.longShare, 'Whales'))]
         : []),
-      h('div.fact', h('span.fact-label', data.exact ? 'Top traders (public ratio, by position)' : 'Whales (top traders, by position)'), shareBar(w ?? 0.5, 'Top traders')),
-      h('div.fact', h('span.fact-label', 'Top accounts'), shareBar(last.smartLong ?? 0.5, 'Top accounts')),
+      h('div.fact', h('span.fact-label', 'Top 20% accounts (by position)'), shareBar(w ?? 0.5, 'Top 20% accounts')),
+      h('div.fact', h('span.fact-label', 'Top 20% accounts (by count)'), shareBar(last.smartLong ?? 0.5, 'Top 20% accounts by count')),
       h('div.fact', h('span.fact-label', 'Crowd'), shareBar(last.crowdLong ?? 0.5, 'Crowd')),
       row('Open interest', last.oi != null ? fmtUsd(last.oi * last.c) : '–'),
       row('CVD, last 24 candles', usd(m.at(-1).cvd - m.at(-25).cvd), signClass(m.at(-1).cvd - m.at(-25).cvd)),
@@ -281,10 +283,7 @@ export function tokenView(root, { symbol, go }) {
             row('Whale long entry', data.exact.latest.longEntry ? fmtPrice(data.exact.latest.longEntry) : '–'),
             row('Whale short entry', data.exact.latest.shortEntry ? fmtPrice(data.exact.latest.shortEntry) : '–'),
           ]
-        : [
-            row('Whale long entry est.', entries.long ? fmtPrice(entries.long) : '–'),
-            row('Whale short entry est.', entries.short ? fmtPrice(entries.short) : '–'),
-          ]),
+        : [row('Whale entries', 'need Smart Money data')]),
       row('Liquidation events, 24 candles', String(recentLiq.length)),
       data.listedAt && row('Listed on Binance futures', new Date(data.listedAt).toLocaleDateString()),
     );
@@ -307,6 +306,20 @@ export function tokenView(root, { symbol, go }) {
         h('span.move-size', `${b.shift > 0 ? '+' : ''}${usd(b.shift)}${b.opensLong || b.opensShort ? ` · opened ${b.opensLong >= b.opensShort ? 'longs ' + usd(b.opensLong) : 'shorts ' + usd(b.opensShort)}` : ' · closing only'}`),
         h('span.move-meta', `at ${fmtPrice(b.price)} · ${new Date(b.t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`),
       ))));
+  }
+
+  function renderFreshness() {
+    const ago = (t) => {
+      const m = Math.round((Date.now() - t) / 60_000);
+      return m < 60 ? `${m} min ago` : m < 2880 ? `${(m / 60).toFixed(1)} h ago` : `${Math.round(m / 1440)} days ago`;
+    };
+    const parts = [];
+    if (data.positioningAsOf) parts.push(`Open interest and long/short ratios: Binance 5-minute snapshots, newest from ${ago(data.positioningAsOf)}; later candles repeat it.`);
+    parts.push(data.exact
+      ? `Whale layers: Binance Smart Money, last recalculated ${ago(data.exact.t)}; moves appear only at Binance updates.`
+      : 'Whale layers: estimates (top-20% tilt × open interest), because no Smart Money data is available for this pair.');
+    parts.push('Liquidation bars are estimates, not reported liquidations.');
+    freshness.textContent = parts.join(' ');
   }
 
   function renderSmart() {

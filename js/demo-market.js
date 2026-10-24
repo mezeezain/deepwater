@@ -1,7 +1,7 @@
 // Simulated futures market for the pump catcher's demo mode.
 // Same interface as createBinanceSource(), so the scanner runs unchanged.
 // Every pair name and number here is invented.
-import { createSignal, updateSignal } from './engine.js';
+import { createSignal, updateSignal, DEFAULTS } from './engine.js';
 
 const NAMES = [
   'BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'ADA', 'AVAX', 'LINK', 'TON', 'SUI', 'WIF', 'ARB', 'OP', 'NEAR', 'APT',
@@ -179,6 +179,7 @@ export function demoHistory(market, now = Date.now()) {
       rise: 4.5 + r() * 9,
       impulse: 1.5 + r() * 3,
       ctx: { rvol: 2.5 + r() * 5, takerBuy: 0.56 + r() * 0.15, oiChange: 1.5 + r() * 6, whaleLong: 0.55 + r() * 0.3, crowdLong: 0.3 + r() * 0.2 },
+      cfg: DEFAULTS,
     });
     sig.gap = (sig.whaleLong - sig.crowdLong) * 100;
     // Random walk with a pump bias of varying strength; some fail straight away.
@@ -189,6 +190,13 @@ export function demoHistory(market, now = Date.now()) {
       const fade = m > 60 + r() * 600 ? -strength * 0.6 : strength;
       p *= 1 + fade * Math.exp(-m / 400) + (r() - 0.5) * 0.006;
       updateSignal(sig, p, alertT + m * 60_000);
+    }
+    // A still-open example keeps being tracked against the simulated market's prices, so move it onto
+    // that pair's current price level (percentages are unchanged); otherwise tracking jumps scales.
+    const pair = market.pairs.find((x) => x.symbol === symbol);
+    if (sig.status === 'TRACKING' && pair?.price > 0) {
+      const k = pair.price / sig.lastPrice;
+      for (const f of ['alertPrice', 'lastPrice', 'peakPrice', 'lowSinceAlert']) sig[f] *= k;
     }
     sig.demo = true;
     out.push(sig);

@@ -7,9 +7,16 @@
 //   WHALE_SERVER=http://localhost:8787      # whale data server for alert context (default; empty to turn off)
 //
 // Optional: SIGNALS_FILE (default worker/signals.json), CATCHER_CONFIG='{"minRise":5}'
-import { readFileSync, writeFileSync, renameSync } from 'node:fs';
+//
+// It also serves the shared signal log, so every device shows the same record:
+//   GET /api/catcher   status, settings, signals (30 days) and pairs close to firing
+//   GET /api/backtest  latest result of tools/backtest.mjs, if one has been run
+//   CATCHER_PORT=8788, ALLOW_ORIGIN=* (set to your site, e.g. https://you.github.io), BACKTEST_FILE
+import http from 'node:http';
+import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Catcher } from '../js/catcher.js';
+import { configId } from '../js/engine.js';
 import { createBinanceSource, REST } from '../js/binance.js';
 import { createDemoMarket } from '../js/demo-market.js';
 
@@ -17,6 +24,9 @@ const demo = process.argv.includes('--demo');
 const file = process.env.SIGNALS_FILE || fileURLToPath(new URL('./signals.json', import.meta.url));
 const cfg = process.env.CATCHER_CONFIG ? JSON.parse(process.env.CATCHER_CONFIG) : {};
 const tg = { token: process.env.TELEGRAM_BOT_TOKEN, chat: process.env.TELEGRAM_CHAT_ID };
+const PORT = +(process.env.CATCHER_PORT || 8788);
+const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN || '*';
+const BACKTEST_FILE = process.env.BACKTEST_FILE || fileURLToPath(new URL('./data/backtest.json', import.meta.url));
 
 if (typeof WebSocket === 'undefined') {
   console.error('This worker needs Node 22 or newer (for the built-in WebSocket).');
@@ -136,6 +146,45 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
     process.exit(0);
   });
 }
+
+// ---------------------------------------------------------------- shared signal log
+
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url, 'http://x');
+  const send = (code, body) => {
+    res.writeHead(code, { 'content-type': 'application/json', 'access-control-allow-origin': ALLOW_ORIGIN, 'cache-control': 'no-store' });
+    res.end(JSON.stringify(body));
+  };
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, { 'access-control-allow-origin': ALLOW_ORIGIN, 'access-control-allow-methods': 'GET', 'access-control-max-age': '86400' });
+    return res.end();
+  }
+  if (url.pathname === '/api/catcher') {
+    const near = catcher.nearMisses().slice(0, 12).map((c) => ({ symbol: c.symbol, screen: c.screen, checks: c.checks, error: c.error ?? null }));
+    return send(200, {
+      t: Date.now(),
+      demo,
+      state: catcher.state,
+      startedAt: catcher.startedAt,
+      lastEval: catcher.lastEval,
+      pairs: catcher.tickers.size,
+      cfg: catcher.cfg,
+      cfgId: configId(catcher.cfg),
+      signals: catcher.signals,
+      near,
+    });
+  }
+  if (url.pathname === '/api/backtest') {
+    if (!existsSync(BACKTEST_FILE)) return send(404, { error: 'No backtest has been run yet. Run: node tools/backtest.mjs' });
+    try {
+      return send(200, JSON.parse(readFileSync(BACKTEST_FILE, 'utf8')));
+    } catch {
+      return send(500, { error: 'Backtest file is unreadable.' });
+    }
+  }
+  send(404, { error: 'Not found. Try /api/catcher or /api/backtest' });
+});
+server.listen(PORT, () => log(`Shared signal log on http://localhost:${PORT}/api/catcher`));
 
 log(`Starting pump catcher (${demo ? 'demo market' : 'Binance live'})${tg.token ? ', Telegram on' : ''}`);
 catcher.start().catch((err) => {

@@ -1,6 +1,6 @@
 // Stacked chart: candles on top, any number of indicator panes below, one shared time axis
 // and crosshair. Canvas only, no dependencies. Colours come from CSS tokens so both themes work.
-import { cssVar, fmtPrice } from './util.js';
+import { cssVar, fmtPrice, demoWatermark } from './util.js';
 
 const PRICE_H = 300;
 const PANE_H = 92;
@@ -44,6 +44,7 @@ export function multiChart(container, { bars, price = {}, panes = [], label = 'P
     canvas.style.height = H + 'px';
     const ctx = canvas.getContext('2d');
     ctx.scale(dpr, dpr);
+    demoWatermark(ctx, W, Math.min(H, PRICE_H));
     const col = { grid: cssVar('--line'), text: cssVar('--muted'), fg: cssVar('--fg'), up: cssVar('--long'), down: cssVar('--short'), bg: cssVar('--surface') };
     const font = cssVar('--font-data');
     ctx.font = `11px ${font}`;

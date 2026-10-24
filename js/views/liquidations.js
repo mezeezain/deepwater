@@ -15,9 +15,10 @@ export function liquidationsView(root, { go }) {
   root.replaceChildren(
     h('section.hero.compact',
       h('div.hero-text',
-        h('p.eyebrow', 'Live · last 15 minutes'),
+        h('p.eyebrow', 'Live sample · last 15 minutes'),
         h('h1', 'Liquidations'),
         h('p.lede', 'Positions closed by the exchange because margin ran out. Bigger tiles mean more money liquidated on that pair.'),
+        h('p.note', 'This is a sample: Binance’s public stream sends at most one liquidation per pair per second, so in a cascade most liquidations are never shown. Use the long/short split as a direction, not a total.'),
       ),
       totals,
     ),

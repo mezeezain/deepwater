@@ -73,19 +73,29 @@ test('liqPrice: standard isolated-margin approximation', () => {
   assert.equal(liqPrice(100, 10, 'short'), 100 * (1 + 0.1 - 0.005));
 });
 
-test('liquidationLevels: levels appear after longs open and vanish when a wick reaches them', () => {
+test('liquidationLevels: both sides of each new contract get levels; wicks erase them', () => {
   const bars = [
     bar({ t: 1, h: 100, l: 100, c: 100, oi: 10000 }),
-    bar({ t: 2, h: 100, l: 100, c: 100, v: 1e6, takerBuy: 8e5, oi: 11000 }), // longs opened at 100
-    bar({ t: 3, h: 100.5, l: 99.5, c: 100, oi: 11000 }),
-    bar({ t: 4, h: 100, l: 97.5, c: 99, oi: 11000 }), // wick to 97.5 clears the 50x (98.5) and 100x (99.5) levels
+    bar({ t: 2, h: 100, l: 100, c: 100, v: 1e6, takerBuy: 8e5, oi: 11000 }), // 1,000 new contracts at 100
+    bar({ t: 3, h: 100.4, l: 99.6, c: 100, oi: 11000 }),
+    bar({ t: 4, h: 100, l: 97.5, c: 99, oi: 11000 }), // wick to 97.5 clears long levels at 99.5 and 98.5
   ];
   const { columns, active } = liquidationLevels(bars, marketLayers(bars));
   assert.equal(columns[0].length, 0);
-  assert.equal(columns[1].length, 4);
-  assert.equal(columns[2].length, 3, '100x level at 99.5 erased by the 99.5 low');
-  assert.deepEqual(active.map((l) => l.lev).sort((a, b) => a - b), [10, 25]);
-  assert.ok(active.every((l) => l.side === 'long' && l.price < 97.5));
+  assert.equal(columns[1].length, 8, '4 leverage tiers × long and short');
+  assert.equal(columns[1].filter((l) => l.side === 'short').length, 4);
+  // Each side carries the full increase, split across tiers.
+  assert.equal(Math.round(columns[1].filter((l) => l.side === 'long').reduce((s, l) => s + l.usd, 0)), 1000 * 100);
+  assert.equal(columns[2].length, 8, 'a 99.6–100.4 candle reaches neither the 100× long (99.5) nor the 100× short (100.5)');
+  const longs = active.filter((l) => l.side === 'long').map((l) => l.lev).sort((a, b) => a - b);
+  assert.deepEqual(longs, [10, 25]);
+});
+
+test('liquidationLevels: maxLev drops tiers a pair does not offer and reweights the rest', () => {
+  const bars = [bar({ t: 1, oi: 10000 }), bar({ t: 2, v: 1e6, takerBuy: 8e5, oi: 11000 })];
+  const { columns } = liquidationLevels(bars, marketLayers(bars), { maxLev: 25 });
+  assert.deepEqual([...new Set(columns[1].map((l) => l.lev))].sort((a, b) => a - b), [10, 25]);
+  assert.equal(Math.round(columns[1].filter((l) => l.side === 'short').reduce((s, l) => s + l.usd, 0)), 1000 * 100);
 });
 
 test('bucketLevels: groups nearby levels', () => {

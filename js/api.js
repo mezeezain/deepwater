@@ -13,20 +13,64 @@ let active = 0;
 const queue = [];
 
 export const status = {
-  mode: 'connecting', // 'live' | 'demo' | 'connecting'
+  mode: 'connecting', // 'live' | 'demo' | 'connecting' | 'reconnected'
   reason: '',
+  chosen: false, // true when the viewer asked for demo (?demo), false when Binance couldn't be reached
+  nextRetry: null, // time of the next automatic check, while in fallback demo
   listeners: new Set(),
-  set(mode, reason = '') {
+  set(mode, reason = '', extra = {}) {
     this.mode = mode;
     this.reason = reason;
+    Object.assign(this, extra);
     this.listeners.forEach((fn) => fn(mode, reason));
   },
 };
 
+// Demo only when the address says so (?demo). It never sticks between visits.
 function forceDemo() {
   try {
-    return new URLSearchParams(location.search).has('demo') || localStorage.getItem('dw:demo') === '1';
+    localStorage.removeItem('dw:demo'); // older versions remembered demo mode; drop that
+  } catch {}
+  try {
+    return new URLSearchParams(location.search).has('demo');
   } catch {
+    return false;
+  }
+}
+
+function explain(err) {
+  if (/451|403/.test(err?.message || '')) return 'Binance blocks its futures data in your region (HTTP 451/403), so this page can’t show real prices here.';
+  if (/429|418/.test(err?.message || '')) return 'Binance is rate-limiting this connection.';
+  return 'Binance couldn’t be reached from this page (a network problem or a regional block).';
+}
+
+// Retry delays after a failed check: 10 s, 30 s, 1 min, 2 min, then every 5 min.
+const RETRY_MS = [10_000, 30_000, 60_000, 120_000, 300_000];
+function scheduleRetry(attempt) {
+  const wait = RETRY_MS[Math.min(attempt, RETRY_MS.length - 1)];
+  status.set('demo', status.reason, { nextRetry: Date.now() + wait });
+  setTimeout(async () => {
+    try {
+      await get('/fapi/v1/ping', {}, 0);
+      // Everything loaded so far is simulated; reload so every screen starts again from live data.
+      status.set('reconnected', 'Binance is reachable again. Switching to live data…');
+      setTimeout(() => location.reload(), 1500);
+    } catch (err) {
+      status.reason = explain(err);
+      scheduleRetry(attempt + 1);
+    }
+  }, wait);
+}
+
+/** Check Binance again now (the banner's "Try live now" button). */
+export async function retryLive() {
+  try {
+    await get('/fapi/v1/ping', {}, 0);
+    status.set('reconnected', 'Binance is reachable again. Switching to live data…');
+    setTimeout(() => location.reload(), 800);
+    return true;
+  } catch (err) {
+    status.set('demo', explain(err), { nextRetry: status.nextRetry });
     return false;
   }
 }
@@ -72,18 +116,25 @@ export function ensureMode() {
   if (!modePromise) {
     modePromise = (async () => {
       if (forceDemo()) {
-        status.set('demo', 'Demo mode is switched on.');
+        status.set('demo', 'You opened the demo version of this page.', { chosen: true });
         return 'demo';
       }
-      try {
-        await get('/fapi/v1/ping', {}, 0);
-        status.set('live');
-        return 'live';
-      } catch (err) {
-        const reason = err instanceof TypeError ? 'Binance could not be reached from this page.' : err.message;
-        status.set('demo', reason);
-        return 'demo';
+      // A brief blip shouldn't drop the whole session into demo: try three times before giving up.
+      let lastErr;
+      for (let i = 0; i < 3; i++) {
+        try {
+          await get('/fapi/v1/ping', {}, 0);
+          status.set('live');
+          return 'live';
+        } catch (err) {
+          lastErr = err;
+          if (/451|403/.test(err?.message || '')) break; // a region block won't change in a second
+          await new Promise((r) => setTimeout(r, 1500));
+        }
       }
+      status.set('demo', explain(lastErr), { chosen: false });
+      scheduleRetry(0);
+      return 'demo';
     })();
   }
   return modePromise;
@@ -190,10 +241,14 @@ export async function getChartData(symbol, interval = '1h', limit = 300) {
     smartLong: sBy.get(k[0]) ?? null,
     crowdLong: cBy.get(k[0]) ?? null,
   }));
+  // When the newest positioning snapshot was taken (before short gaps are filled forward).
+  const lastPos = [...bars].reverse().find((b) => b.crowdLong != null || b.oi != null);
+  const positioningAsOf = lastPos ? lastPos.t + ms : null;
   fillGaps(bars, ['oi', 'whaleLong', 'smartLong', 'crowdLong']);
   const meta = info.symbols.find((x) => x.symbol === symbol);
   return {
     bars,
+    positioningAsOf,
     funding: funding.map((r) => ({ t: +r.fundingTime, rate: +r.fundingRate })),
     listedAt: meta?.onboardDate ?? null,
   };
@@ -218,13 +273,25 @@ function fillGaps(bars, fields) {
 // from its website API, which browsers can't call from another site. worker/smartmoney.mjs polls it and
 // serves the results; the app reads them from the address saved here.
 
+// The server this site uses by default, so every device and visitor gets exact whale data and the
+// shared signal log without setting anything up. Change it if you fork the project.
+export const DEFAULT_WHALE_SERVER = 'https://deepwater-whales.duckdns.org';
+
 export const whaleServer = {
+  /** Saved address; the default when nothing is saved; '' after the viewer chose Disconnect. */
   get() {
     try {
-      return localStorage.getItem('dw:whale-server') || '';
+      const saved = localStorage.getItem('dw:whale-server');
+      return saved == null ? DEFAULT_WHALE_SERVER : saved;
     } catch {
-      return '';
+      return DEFAULT_WHALE_SERVER;
     }
+  },
+  reset() {
+    try {
+      localStorage.removeItem('dw:whale-server');
+    } catch {}
+    cache.clear();
   },
   set(url) {
     try {
@@ -297,6 +364,27 @@ export async function getSmartHistory(symbol) {
   return body ? { source: 'server', snapshots: body.snapshots, mark: body.mark } : null;
 }
 
+/**
+ * Whether the futures pair's base coin trades against USDT on Binance spot: true, false, or null if unknown.
+ * Used to warn that futures positioning doesn't map one-to-one to spot (or that there is no spot market).
+ */
+const spotCache = new Map();
+export async function spotListed(symbol) {
+  if (await isDemo()) return null;
+  if (spotCache.has(symbol)) return spotCache.get(symbol);
+  // Futures-only multipliers like 1000PEPEUSDT trade on spot as PEPEUSDT.
+  const spotSymbol = symbol.replace(/^1000+|^1M/, '');
+  let listed = null;
+  try {
+    const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${encodeURIComponent(spotSymbol)}`);
+    listed = res.ok ? true : res.status === 400 ? false : null;
+  } catch {
+    listed = null;
+  }
+  spotCache.set(symbol, listed);
+  return listed;
+}
+
 /** Order book snapshot: { bids: [[price, qty]], asks: [[price, qty]] } */
 export async function getDepth(symbol) {
   if (await isDemo()) return demo.depth(symbol);
@@ -356,8 +444,8 @@ export function streamLiquidations(onEvent) {
 }
 
 export function setDemo(on) {
-  try {
-    localStorage.setItem('dw:demo', on ? '1' : '0');
-  } catch {}
-  location.reload();
+  const url = new URL(location.href);
+  if (on) url.searchParams.set('demo', '');
+  else url.searchParams.delete('demo');
+  location.href = url.toString();
 }

@@ -2,10 +2,12 @@
 // and the background worker (worker/catcher.mjs) share exactly the same rules.
 //
 // A signal goes through three gates:
-//   1. Screen  – price has lifted a moderate amount off its rolling 24h low, and moved fast in the last 5 minutes.
-//   2. Confirm – the move has fuel: volume spike, taker buying (positive CVD), open interest growing.
-//   3. Edge    – positioning favours more upside: whales longer than the crowd, or a heavily short crowd.
-// Once fired, a signal is tracked until it fails or gives back most of its gain.
+//   1. Screen  – price has lifted a moderate amount off its rolling 24h low, moved fast in the last 5 minutes,
+//                and isn't just bouncing far below its 24h high.
+//   2. Confirm – order flow backs the move: volume spike, taker buying (positive CVD), open interest growing.
+//   3. Edge    – positioning: top accounts longer than the crowd, or a heavily short crowd.
+// Once fired, a signal is tracked until it fails or gives back most of its gain, and its exit price is stored
+// so results can be reported as realised returns after costs, not only as the best price reached.
 
 export const DEFAULTS = {
   minRise: 4.5, // % above the 24h low, lower bound
@@ -23,44 +25,87 @@ export const DEFAULTS = {
   maxTrackHours: 72,
   cooldownMin: 60, // no new alert on the same pair for this long after one closes
   requireWhaleBias: false, // optional: skip alerts when Binance Smart Money whales lean the other way
+  maxBelowHigh: 20, // skip when price is more than this % below its 24h high (a bounce after a drop, not a breakout)
+  stopMode: 'fixed', // 'fixed': stopPct below the alert; 'vol': volStopMult × recent 5-minute range, kept within 3–12%
+  volStopMult: 3,
+  costPct: 0.15, // assumed round-trip fees + slippage, %, taken off every realised result
 };
+
+// Settings that decide which signals fire and how they close. Stored on each signal so the
+// record can be split by rule set after Settings change.
+const RULE_KEYS = ['minRise', 'maxRise', 'minImpulse', 'minRvol', 'minTakerBuy', 'minOiChange', 'requireEdge', 'minGap', 'squeezeCrowdLong', 'requireWhaleBias', 'maxBelowHigh', 'stopMode', 'stopPct', 'volStopMult', 'trailFrom', 'trailGiveBack', 'maxTrackHours'];
+
+export function ruleSet(cfg = DEFAULTS) {
+  return Object.fromEntries(RULE_KEYS.map((k) => [k, cfg[k] ?? DEFAULTS[k]]));
+}
+
+/** Short stable id for a rule set, e.g. "r3f9a2c". */
+export function configId(cfg = DEFAULTS) {
+  const text = JSON.stringify(ruleSet(cfg));
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
+  return 'r' + (h >>> 0).toString(16).padStart(8, '0').slice(0, 6);
+}
 
 const pct = (a, b) => ((a - b) / b) * 100;
 
 /**
  * Gate 1, cheap and run on every pair every cycle.
- * ticker: { price, low24h }, price5mAgo: number | null
+ * ticker: { price, low24h, high24h }, price5mAgo: number | null
+ * belowHigh separates a breakout (near the 24h high) from a bounce after a drop (far below it).
  */
 export function screen(ticker, price5mAgo, cfg = DEFAULTS) {
-  if (!(ticker.low24h > 0) || !(ticker.price > 0)) return { pass: false, rise: 0, impulse: 0 };
+  if (!(ticker.low24h > 0) || !(ticker.price > 0)) return { pass: false, inBand: false, rise: 0, impulse: 0, belowHigh: null };
   const rise = pct(ticker.price, ticker.low24h);
   const impulse = price5mAgo > 0 ? pct(ticker.price, price5mAgo) : 0;
-  return {
-    pass: rise >= cfg.minRise && rise <= cfg.maxRise && impulse >= cfg.minImpulse,
-    inBand: rise >= cfg.minRise && rise <= cfg.maxRise,
-    rise,
-    impulse,
-  };
+  const belowHigh = ticker.high24h > 0 ? Math.max(0, ((ticker.high24h - ticker.price) / ticker.high24h) * 100) : null;
+  const notBounce = belowHigh == null || cfg.maxBelowHigh == null || belowHigh <= cfg.maxBelowHigh;
+  const inBand = rise >= cfg.minRise && rise <= cfg.maxRise && notBounce;
+  return { pass: inBand && impulse >= cfg.minImpulse, inBand, rise, impulse, belowHigh };
 }
 
 /**
- * Order flow from 1-minute klines (Binance kline arrays or { v, takerBuy } objects).
- * Returns relative volume and taker buy share for the last 5 minutes.
+ * Order flow from 1-minute klines (Binance kline arrays or { v, takerBuy, h, l, c } objects).
+ * Returns relative volume and taker buy share for the last 5 minutes, and the typical 5-minute
+ * price range (%) over the minutes before, used by the volatility-based stop.
  */
 export function orderFlow(klines) {
-  const rows = klines.map((k) => (Array.isArray(k) ? { v: +k[7], takerBuy: +k[10] } : k));
-  if (rows.length < 10) return { rvol: 0, takerBuy: 0.5, cvd5m: 0 };
+  const rows = klines.map((k) => (Array.isArray(k) ? { v: +k[7], takerBuy: +k[10], h: +k[2], l: +k[3], c: +k[4] } : k));
+  if (rows.length < 10) return { rvol: 0, takerBuy: 0.5, cvd5m: 0, range5m: null };
   const last = rows.slice(-5);
   const prior = rows.slice(0, -5);
   const lastVol = last.reduce((s, r) => s + r.v, 0);
-  const windows = Math.max(1, Math.floor(prior.length / 5));
-  const avg5 = prior.reduce((s, r) => s + r.v, 0) / windows;
+  // Average volume per minute × 5, so any number of prior minutes gives a fair 5-minute baseline.
+  const avg5 = (prior.reduce((s, r) => s + r.v, 0) / prior.length) * 5;
   const buys = last.reduce((s, r) => s + r.takerBuy, 0);
   return {
     rvol: avg5 > 0 ? lastVol / avg5 : 0,
     takerBuy: lastVol > 0 ? buys / lastVol : 0.5,
     cvd5m: buys - (lastVol - buys), // in quote currency (USDT)
+    range5m: typicalRange(prior),
   };
+}
+
+/** Median high–low range of complete 5-minute windows, % of close. */
+function typicalRange(rows) {
+  if (!rows.length || rows[0].h == null) return null;
+  const ranges = [];
+  for (let i = rows.length % 5; i + 5 <= rows.length; i += 5) {
+    const w = rows.slice(i, i + 5);
+    const hi = Math.max(...w.map((r) => r.h));
+    const lo = Math.min(...w.map((r) => r.l));
+    const c = w[4].c;
+    if (c > 0 && hi >= lo) ranges.push(((hi - lo) / c) * 100);
+  }
+  if (!ranges.length) return null;
+  ranges.sort((a, b) => a - b);
+  return ranges[Math.floor(ranges.length / 2)];
+}
+
+/** Stop distance (%) for a new signal: fixed, or a multiple of the typical 5-minute range. */
+export function stopFor(cfg, range5m) {
+  if (cfg.stopMode === 'vol' && range5m > 0) return Math.min(12, Math.max(3, range5m * cfg.volStopMult));
+  return cfg.stopPct;
 }
 
 /**
@@ -77,7 +122,7 @@ export function confirm(ctx, cfg = DEFAULTS) {
     { id: 'oi', label: 'Open interest rising', value: ctx.oiChange, ok: ctx.oiChange != null && ctx.oiChange >= cfg.minOiChange },
     {
       id: 'edge',
-      label: edgeSqueeze && !edgeWhales ? 'Crowd heavily short' : 'Whales longer than crowd',
+      label: edgeSqueeze && !edgeWhales ? 'Crowd heavily short' : 'Top accounts longer than crowd',
       value: gap,
       ok: !cfg.requireEdge || edgeWhales || edgeSqueeze,
     },
@@ -85,7 +130,8 @@ export function confirm(ctx, cfg = DEFAULTS) {
   return { pass: checks.every((c) => c.ok), checks, gap };
 }
 
-export function createSignal({ symbol, price, t, rise, impulse, ctx = {}, gap = null }) {
+export function createSignal({ symbol, price, t, rise, impulse, ctx = {}, gap = null, cfg = null, belowHigh = null }) {
+  const rules = cfg ? ruleSet(cfg) : null;
   return {
     id: `${symbol}-${t}`,
     symbol,
@@ -109,6 +155,12 @@ export function createSignal({ symbol, price, t, rise, impulse, ctx = {}, gap = 
     dip: 0, // worst drawdown before that best gain, %   (maximum adverse excursion up to the peak)
     closedT: null,
     closeReason: null,
+    exitPrice: null, // price when tracking closed
+    belowHigh,
+    range5m: ctx.range5m ?? null,
+    stopPct: cfg ? stopFor(cfg, ctx.range5m) : null, // the stop this signal was given, % below the alert
+    cfgId: cfg ? configId(cfg) : null,
+    rules,
   };
 }
 
@@ -125,17 +177,33 @@ export function updateSignal(sig, price, t, cfg = DEFAULTS) {
     // Frozen at each new high: later drawdowns after the peak don't count as "dip before peak".
     sig.dip = Math.min(0, pct(sig.lowSinceAlert, sig.alertPrice));
   }
+  // Each signal keeps the exit rules it fired with, so later Settings changes don't rewrite open trades.
+  const r = sig.rules ?? cfg;
+  const stop = sig.stopPct ?? r.stopPct;
   const now = pct(price, sig.alertPrice);
-  if (now <= -cfg.stopPct) close(sig, t, 'Fell below alert price');
-  else if (sig.rise >= cfg.trailFrom && now < sig.rise * (1 - cfg.trailGiveBack)) close(sig, t, 'Gave back most of the gain');
-  else if (t - sig.alertT > cfg.maxTrackHours * 3_600_000) close(sig, t, 'Tracking window ended');
+  if (now <= -stop) close(sig, t, price, 'Hit the stop');
+  else if (sig.rise >= r.trailFrom && now < sig.rise * (1 - r.trailGiveBack)) close(sig, t, price, 'Gave back most of the gain');
+  else if (t - sig.alertT > r.maxTrackHours * 3_600_000) close(sig, t, price, 'Tracking window ended');
   return sig;
 }
 
-function close(sig, t, reason) {
+function close(sig, t, price, reason) {
   sig.status = 'CLOSED';
   sig.closedT = t;
+  sig.exitPrice = price;
   sig.closeReason = reason;
+}
+
+/**
+ * Realised result of a closed signal, % after costs: bought at the alert price, sold at the exit.
+ * Older signals saved before exit prices were stored use the last tracked price, which is the same thing.
+ * Returns null for signals still open.
+ */
+export function realised(sig, costPct = DEFAULTS.costPct) {
+  if (sig.status !== 'CLOSED') return null;
+  const exit = sig.exitPrice ?? sig.lastPrice;
+  if (!(exit > 0) || !(sig.alertPrice > 0)) return null;
+  return pct(exit, sig.alertPrice) - costPct;
 }
 
 /**
@@ -194,9 +262,18 @@ export function whaleContext(sum, price, now = Date.now()) {
   };
 }
 
-export function stats(signals) {
-  const done = signals.filter((s) => s.rise != null);
-  const hit = (n) => done.filter((s) => s.rise >= n).length;
+/**
+ * Track record. Performance counts closed signals only; open ones are reported separately.
+ *   winRate / avgWin / avgLoss / expectancy  from realised results after costPct (what following the
+ *                                             close rules would have returned)
+ *   hit10 / medianPeak                        best price reached (best case, not achievable in practice)
+ */
+export function stats(signals, { costPct = DEFAULTS.costPct } = {}) {
+  const closed = signals.filter((s) => s.status === 'CLOSED');
+  const results = closed.map((s) => realised(s, costPct)).filter((v) => v != null);
+  const wins = results.filter((v) => v > 0);
+  const losses = results.filter((v) => v <= 0);
+  const mean = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
   const median = (arr) => {
     if (!arr.length) return null;
     const a = [...arr].sort((x, y) => x - y);
@@ -205,10 +282,16 @@ export function stats(signals) {
   };
   return {
     count: signals.length,
-    tracking: signals.filter((s) => s.status === 'TRACKING').length,
-    hit5: done.length ? hit(5) / done.length : null,
-    hit10: done.length ? hit(10) / done.length : null,
-    medianRise: median(done.map((s) => s.rise)),
-    medianDip: median(done.map((s) => s.dip)),
+    tracking: signals.length - closed.length,
+    closed: closed.length,
+    winRate: results.length ? wins.length / results.length : null,
+    avgWin: mean(wins),
+    avgLoss: mean(losses),
+    expectancy: mean(results),
+    stopped: closed.length ? closed.filter((s) => /stop|Fell below/.test(s.closeReason || '')).length / closed.length : null,
+    hit10: closed.length ? closed.filter((s) => s.rise >= 10).length / closed.length : null,
+    medianPeak: median(closed.map((s) => s.rise)),
+    medianDip: median(closed.map((s) => s.dip)),
+    costPct,
   };
 }

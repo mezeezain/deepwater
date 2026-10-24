@@ -1,5 +1,5 @@
 // Whales vs crowd: who is long when everyone else is short, across the most traded pairs.
-import { getMarket, getPositioning, getSmartOverview, whaleServer, testWhaleServer, isDemo } from '../api.js';
+import { getMarket, getPositioning, getSmartOverview, whaleServer, testWhaleServer, isDemo, DEFAULT_WHALE_SERVER } from '../api.js';
 import { sparkline } from '../chart.js';
 import { h, ticker, fmtPrice, fmtPct, fmtUsd, fmtShare, signClass, shareBar, sortRows, csv, copyText, toast, watchlist, store } from '../util.js';
 
@@ -87,7 +87,7 @@ export function whalesView(root, { go }) {
   root.replaceChildren(
     h('section.hero',
       h('div.hero-text',
-        h('p.eyebrow', 'Binance USDⓈ-M perpetuals · top traders vs all accounts'),
+        h('p.eyebrow', 'Binance USDⓈ-M perpetuals · Smart Money whales vs all accounts'),
         h('h1', 'Where the big money leans'),
         h('p.lede', 'Compare how the largest traders are positioned with everyone else on the same pair. A wide gap means the two groups disagree.'),
       ),
@@ -100,7 +100,7 @@ export function whalesView(root, { go }) {
       progress,
       tableWrap,
       h('div.table-foot', more,
-        h('p.note', 'Whales: top traders ranked by position size. Top accounts: top traders ranked by account. Crowd: all accounts on the pair. Shows positioning, not a forecast.')),
+        h('p.note', 'Whales: Binance Smart Money whales, long share by position size. Pairs marked T20 have no Smart Money data and use Binance’s top 20% of accounts by margin balance instead, which is thousands of accounts on big pairs, many of them hedging. Top 20% (count): share of those accounts that are long. Crowd: all accounts on the pair. Shows positioning, not a forecast.')),
     ),
   );
 
@@ -156,10 +156,10 @@ export function whalesView(root, { go }) {
       h('thead', h('tr',
         h('th', { scope: 'col' }, h('span.sr', 'Watch')),
         th('symbol', 'Pair'),
-        th('whaleLong', 'Whales long', 'Long share of positions held by top traders'),
+        th('whaleLong', 'Whales long', 'Binance Smart Money whales, by position size. T20 rows: top 20% of accounts by margin balance instead'),
         th('crowdLong', 'Crowd long', 'Share of all accounts that are long'),
         th('gap', 'Gap', 'Points between whale and crowd long share'),
-        th('smartLong', 'Top accts', 'Long share of top trader accounts'),
+        th('smartLong', 'Top 20% (count)', 'Share of the top 20% of accounts (by margin balance) that are long'),
         th('whaleNet', 'Whale net', 'Whale long minus short position value, in USD (exact data only)'),
         th('shift24h', 'Whale 24h', 'Change in whale long share over 24 hours, in points'),
         h('th', { scope: 'col' }, 'Trend'),
@@ -195,6 +195,7 @@ export function whalesView(root, { go }) {
       }, starred ? '★' : '☆')),
       h('th.pair', { scope: 'row' }, h('span.pair-name', ticker(r.symbol)),
         r.cohort === 'smart' && h('span.chip.aligned', { title: 'Fewer than 10 whales on this pair: all smart-money traders shown instead' }, 'S'),
+        !r.exact && h('span.chip.aligned', { title: 'No Smart Money data for this pair: Binance’s top 20% of accounts by margin balance, a much broader group than whales' }, 'T20'),
         sig && h(`span.chip.${r.signal}`, { title: sig[1] }, sig[0])),
       h('td', shareBar(r.whaleLong, 'Whales')),
       h('td', shareBar(r.crowdLong, 'Crowd')),
@@ -238,10 +239,10 @@ export function whalesView(root, { go }) {
     else if (smart) {
       const newest = Math.max(0, ...[...smart.rows.values()].map((r) => r.t || 0));
       const hrs = newest ? ((Date.now() - newest) / 3_600_000).toFixed(1) : null;
-      sourceLine.textContent = `Whale numbers: exact, from your whale data server (${n} pairs${hrs ? `, Binance updated ${hrs} h ago` : ''}). Pairs it doesn't track use Binance's top-trader ratio.`;
+      sourceLine.textContent = `Whale numbers: exact, from your whale data server (${n} pair${n === 1 ? '' : 's'}${hrs ? `, Binance updated ${hrs} h ago` : ''}). Pairs it doesn't track use Binance's top 20% of accounts (marked T20).`;
     }
     else if (smartError) sourceLine.textContent = `Whale data server unreachable (${smartError}). Showing Binance's top-trader ratio instead.`;
-    else sourceLine.textContent = "Whale numbers: Binance's top-trader long/short ratio. Connect a whale data server under Whale data for exact positions, entries and PnL.";
+    else sourceLine.textContent = "Whale numbers: Binance's top 20% of accounts (by margin balance), not true whales. Connect a whale data server under Whale data for Smart Money positions, entries and PnL.";
     sourceLine.dataset.state = smart ? 'exact' : smartError ? 'error' : 'ratio';
   }
 
@@ -274,6 +275,7 @@ export function whalesView(root, { go }) {
         h('label.field', h('span', 'Whale data server'), input),
         h('button.btn', { type: 'submit' }, 'Connect'),
         whaleServer.get() && h('button.btn.ghost', { type: 'button', onclick: () => { input.value = ''; connect(); } }, 'Disconnect'),
+        whaleServer.get() !== DEFAULT_WHALE_SERVER && h('button.btn.ghost', { type: 'button', onclick: () => { whaleServer.reset(); input.value = DEFAULT_WHALE_SERVER; result.textContent = 'Using the default server.'; load(); } }, 'Use default server'),
       ),
       result,
     );

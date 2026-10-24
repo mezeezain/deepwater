@@ -141,4 +141,19 @@ export function toast(msg) {
   setTimeout(() => t.remove(), 2600);
 }
 
+/** Large faint "DEMO" across a chart, so a screenshot of simulated data can't pass for real data. */
+export function demoWatermark(ctx, w, h) {
+  if (document.documentElement.dataset.demo !== '1') return;
+  ctx.save();
+  ctx.globalAlpha = 0.08;
+  ctx.fillStyle = cssVar('--fg');
+  ctx.font = `800 ${Math.max(36, Math.min(140, w / 5))}px ${cssVar('--font-display')}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.translate(w / 2, h / 2);
+  ctx.rotate(-0.18);
+  ctx.fillText('DEMO DATA', 0, 0);
+  ctx.restore();
+}
+
 export const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();

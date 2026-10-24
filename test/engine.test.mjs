@@ -1,7 +1,7 @@
 // Run with: node --test
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULTS, screen, orderFlow, confirm, createSignal, updateSignal, replayCandles, inCooldown, stats } from '../js/engine.js';
+import { DEFAULTS, screen, orderFlow, confirm, createSignal, updateSignal, replayCandles, inCooldown, stats, realised, stopFor, configId } from '../js/engine.js';
 
 const round1 = (x) => Math.round(x * 10) / 10;
 
@@ -121,12 +121,69 @@ test('inCooldown: blocks repeats while tracking and shortly after closing', () =
   assert.equal(inCooldown('C', [tracking, closed], 10_000), false);
 });
 
-test('stats: hit rates and medians', () => {
-  const mk = (rise, dip) => ({ ...createSignal({ symbol: 'X', price: 1, t: 0 }), rise, dip });
-  const s = stats([mk(2, -1), mk(6, -3), mk(12, -0.5), mk(30, -2)]);
+test('stats: performance counts closed signals only, from realised exits after costs', () => {
+  const closedAt = (alert, exit, rise, reason = 'Gave back most of the gain') => ({
+    ...createSignal({ symbol: 'X', price: alert, t: 0 }), status: 'CLOSED', exitPrice: exit, rise, dip: -1, closeReason: reason,
+  });
+  const open = { ...createSignal({ symbol: 'Y', price: 1, t: 0 }), rise: 40 };
+  const s = stats([closedAt(100, 106, 12), closedAt(100, 95, 0, 'Hit the stop'), closedAt(100, 102, 4), open], { costPct: 0.2 });
   assert.equal(s.count, 4);
-  assert.equal(s.hit5, 0.75);
-  assert.equal(s.hit10, 0.5);
-  assert.equal(s.medianRise, 9);
-  assert.equal(s.medianDip, -1.5);
+  assert.equal(s.tracking, 1, 'the open signal is reported separately');
+  assert.equal(s.closed, 3);
+  assert.equal(Math.round(s.winRate * 100), 67);
+  assert.equal(round1(s.avgWin), round1((5.8 + 1.8) / 2));
+  assert.equal(round1(s.avgLoss), -5.2);
+  assert.equal(round1(s.expectancy), round1((5.8 - 5.2 + 1.8) / 3));
+  assert.equal(round1(s.stopped * 3), 1);
+  assert.equal(round1(s.hit10 * 3), 1, 'best case: one closed signal touched +10%; the open +40% is not counted');
+  assert.equal(s.medianPeak, 4);
+});
+
+test('realised: older signals without exitPrice use the last tracked price', () => {
+  const s = { ...createSignal({ symbol: 'X', price: 100, t: 0 }), status: 'CLOSED', lastPrice: 103 };
+  assert.equal(round1(realised(s, 0.15)), 2.9);
+  assert.equal(realised({ ...s, status: 'TRACKING' }), null);
+});
+
+test('updateSignal: stores the exit price when it closes', () => {
+  const s = createSignal({ symbol: 'X', price: 100, t: 0 });
+  updateSignal(s, 94.5, 1000);
+  assert.equal(s.exitPrice, 94.5);
+  assert.equal(s.closeReason, 'Hit the stop');
+});
+
+test('orderFlow: volume baseline is a per-minute average, whatever the window length', () => {
+  // 29 quiet minutes then 5 busy ones: the old floor(29/5) windows overstated the baseline by 16%.
+  const quiet = Array.from({ length: 29 }, () => ({ v: 100, takerBuy: 50 }));
+  const burst = Array.from({ length: 5 }, () => ({ v: 250, takerBuy: 150 }));
+  assert.equal(round1(orderFlow([...quiet, ...burst]).rvol), 2.5);
+});
+
+test('orderFlow: typical 5-minute range for the volatility stop', () => {
+  const rows = Array.from({ length: 35 }, (_, i) => ({ v: 100, takerBuy: 50, h: 101, l: 99, c: 100 }));
+  assert.equal(orderFlow(rows).range5m, 2);
+  assert.equal(stopFor({ ...DEFAULTS, stopMode: 'vol', volStopMult: 3 }, 2), 6);
+  assert.equal(stopFor({ ...DEFAULTS, stopMode: 'vol', volStopMult: 3 }, 10), 12, 'capped at 12%');
+  assert.equal(stopFor({ ...DEFAULTS, stopMode: 'vol', volStopMult: 3 }, 0.5), 3, 'at least 3%');
+  assert.equal(stopFor(DEFAULTS, 2), DEFAULTS.stopPct);
+});
+
+test('screen: a bounce far below the 24h high is not a breakout', () => {
+  // Crashed from 100 to 70, bounced 6% to 74.2: 25.8% below the high.
+  assert.equal(screen({ price: 74.2, low24h: 70, high24h: 100 }, 72).pass, false);
+  // Same lift off the low near the top of the range: passes.
+  assert.equal(screen({ price: 74.2, low24h: 70, high24h: 76 }, 72).pass, true);
+  assert.equal(screen({ price: 74.2, low24h: 70, high24h: 100 }, 72, { ...DEFAULTS, maxBelowHigh: 30 }).pass, true);
+});
+
+test('signals keep the rules they fired with', () => {
+  const cfg = { ...DEFAULTS, stopPct: 7 };
+  const s = createSignal({ symbol: 'X', price: 100, t: 0, cfg });
+  assert.equal(s.cfgId, configId(cfg));
+  assert.notEqual(s.cfgId, configId(DEFAULTS));
+  assert.equal(s.stopPct, 7);
+  updateSignal(s, 94, 1000, DEFAULTS); // a 5% default stop would close this; the signal's own 7% does not
+  assert.equal(s.status, 'TRACKING');
+  updateSignal(s, 92.9, 2000, DEFAULTS);
+  assert.equal(s.status, 'CLOSED');
 });

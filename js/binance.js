@@ -54,18 +54,21 @@ export function createBinanceSource({ get }) {
       return k.length ? +k[0][1] : null;
     },
 
-    /** Everything gates 2 and 3 need, in four light requests. */
+    /** Everything gates 2 and 3 need, in five light requests. */
     async getContext(symbol) {
-      const [klines, oi, whales, crowd] = await Promise.all([
+      const [klines, oiNow, oi, whales, crowd] = await Promise.all([
         get('/fapi/v1/klines', { symbol, interval: '1m', limit: 35 }),
+        get('/fapi/v1/openInterest', { symbol }),
         get('/futures/data/openInterestHist', { symbol, period: '5m', limit: 4 }),
         get('/futures/data/topLongShortPositionRatio', { symbol, period: '5m', limit: 1 }),
         get('/futures/data/globalLongShortAccountRatio', { symbol, period: '5m', limit: 1 }),
       ]);
       // Drop the still-forming minute so volume isn't understated.
       const closed = klines.filter((k) => +k[6] < Date.now());
+      // Real-time open interest now, against the 5-minute history point about 15 minutes back.
+      // (The history's newest point can be several minutes old, which would miss a move that just started.)
       const oiFirst = oi.length ? +oi[0].sumOpenInterest : null;
-      const oiLast = oi.length ? +oi[oi.length - 1].sumOpenInterest : null;
+      const oiLast = oiNow?.openInterest != null ? +oiNow.openInterest : oi.length ? +oi[oi.length - 1].sumOpenInterest : null;
       return {
         klines: closed,
         oiChange: oiFirst ? ((oiLast - oiFirst) / oiFirst) * 100 : null,

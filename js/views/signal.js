@@ -5,6 +5,8 @@ import { priceChart } from '../chart.js';
 import { getChartData } from '../api.js';
 import { marketLayers, whaleLayers, liquidationLevels, setupCheck } from '../indicators.js';
 import { h, ticker, fmtPrice, fmtPct, fmtUsd, signClass } from '../util.js';
+import { realised, DEFAULTS } from '../engine.js';
+import { spotListed } from '../api.js';
 import { fmtDuration, fmtDip } from './pumps.js';
 
 export function signalView(root, { id, go }) {
@@ -17,6 +19,7 @@ export function signalView(root, { id, go }) {
   const why = h('div.facts');
   const life = h('div.facts');
   const checks = h('div.checks-list', h('p.loading', 'Checking order flow…'));
+  const spotNote = h('p.note');
 
   root.replaceChildren(
     h('button.back', { onclick: () => go('pumps') }, '← Pump catcher'),
@@ -53,6 +56,13 @@ export function signalView(root, { id, go }) {
       return;
     }
     loadChecks(sig.symbol);
+    spotListed(sig.symbol).then((listed) => {
+      spotNote.textContent = listed === false
+        ? `${ticker(sig.symbol)} has no USDT market on Binance spot: this alert is about futures only.`
+        : listed === true
+          ? `This alert is based on futures prices and positioning. ${ticker(sig.symbol)} also trades on Binance spot, where prices, volume and positioning can differ.`
+          : 'This alert is based on futures prices and positioning; spot markets can differ.';
+    });
     const paint = () => {
       const nowChg = ((sig.lastPrice - sig.alertPrice) / sig.alertPrice) * 100;
       head.replaceChildren(
@@ -66,7 +76,9 @@ export function signalView(root, { id, go }) {
         tile('Alert price', fmtPrice(sig.alertPrice)),
         tile('Rise after alert', fmtPct(sig.rise), `peak ${fmtPrice(sig.peakPrice)} after ${fmtDuration(sig.peakT - sig.alertT)}`, signClass(sig.rise)),
         tile('Dip before peak', fmtDip(sig.dip), 'lowest point before the peak', sig.dip <= -0.05 ? 'down' : ''),
-        tile(sig.status === 'TRACKING' ? 'Now' : 'At close', fmtPct(nowChg), fmtPrice(sig.lastPrice), signClass(nowChg)),
+        sig.status === 'CLOSED'
+          ? tile('Result', fmtPct(realised(sig, catcher.cfg.costPct ?? DEFAULTS.costPct)), `exit ${fmtPrice(sig.exitPrice ?? sig.lastPrice)}, after ${catcher.cfg.costPct ?? DEFAULTS.costPct}% costs`, signClass(realised(sig, catcher.cfg.costPct ?? DEFAULTS.costPct)))
+          : tile('Now', fmtPct(nowChg), `${fmtPrice(sig.lastPrice)} · open, before costs`, signClass(nowChg)),
       );
       const cfg = catcher.cfg;
       const row = (label, value, ok) => h('div.fact-row', h('span', label), h(`strong.${ok == null ? '' : ok ? 'up' : 'down'}`, value));
@@ -76,9 +88,9 @@ export function signalView(root, { id, go }) {
         row('Volume spike', sig.rvol == null ? '–' : `${sig.rvol.toFixed(1)}×`, sig.rvol >= cfg.minRvol),
         row('Taker buy share', sig.takerBuy == null ? '–' : `${Math.round(sig.takerBuy * 100)}%`, sig.takerBuy >= cfg.minTakerBuy),
         row('Open interest, 15m', fmtPct(sig.oiChange), sig.oiChange >= cfg.minOiChange),
-        row('Whales long', sig.whaleLong == null ? '–' : `${Math.round(sig.whaleLong * 100)}%`),
-        row('Crowd long', sig.crowdLong == null ? '–' : `${Math.round(sig.crowdLong * 100)}%`),
-        row('Gap', sig.gap == null ? '–' : `${sig.gap > 0 ? '+' : ''}${Math.round(sig.gap)} pts`, sig.gap > cfg.minGap || sig.crowdLong < cfg.squeezeCrowdLong),
+        row('Top 20% accounts long', sig.whaleLong == null ? '–' : `${Math.round(sig.whaleLong * 100)}%`),
+        row('All accounts long', sig.crowdLong == null ? '–' : `${Math.round(sig.crowdLong * 100)}%`),
+        row('Top 20% − crowd gap', sig.gap == null ? '–' : `${sig.gap > 0 ? '+' : ''}${Math.round(sig.gap)} pts`, sig.gap > cfg.minGap || sig.crowdLong < cfg.squeezeCrowdLong),
         ...(sig.whale
           ? [
               h('h3.why-sub', 'Binance Smart Money at the alert'),
@@ -90,12 +102,18 @@ export function signalView(root, { id, go }) {
             ]
           : [h('p.note', 'No Binance Smart Money data for this alert (connect a whale data server on the Whales page).')]),
       );
+      const rules = sig.rules ?? cfg;
+      const stop = sig.stopPct ?? rules.stopPct;
       life.replaceChildren(
+        row('Stop', `${stop.toFixed(1)}% below alert (${fmtPrice(sig.alertPrice * (1 - stop / 100))})`),
+        sig.range5m != null && row('Typical 5-minute range', `${sig.range5m.toFixed(2)}%`),
         row('Time to peak', fmtDuration(sig.peakT - sig.alertT)),
         row('Tracked for', fmtDuration((sig.closedT || Date.now()) - sig.alertT)),
+        sig.cfgId && row('Rule set', sig.cfgId),
         sig.status === 'CLOSED'
-          ? h('p.read', `Closed: ${sig.closeReason}.`)
-          : h('p.read', `Still tracking. Closes if price drops ${cfg.stopPct}% below the alert, or gives back ${Math.round(cfg.trailGiveBack * 100)}% of a gain over ${cfg.trailFrom}%.`),
+          ? h('p.read', `Closed: ${sig.closeReason} at ${fmtPrice(sig.exitPrice ?? sig.lastPrice)}.`)
+          : h('p.read', `Open. Closes at the stop, after giving back ${Math.round(rules.trailGiveBack * 100)}% of a gain over ${rules.trailFrom}%, or after ${rules.maxTrackHours} hours.`),
+        spotNote,
       );
     };
     paint();

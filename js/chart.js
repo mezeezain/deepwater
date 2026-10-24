@@ -1,6 +1,6 @@
 // Small canvas chart: candles or a line on top, optional percentage lines in a lower pane.
 // Redraws on resize and theme change. No dependencies.
-import { cssVar, fmtPrice } from './util.js';
+import { cssVar, fmtPrice, demoWatermark } from './util.js';
 
 export function priceChart(container, { candles, overlays = [], markers = [], levels = [], label = 'Price chart with whale and crowd long share' }) {
   const canvas = document.createElement('canvas');
@@ -25,6 +25,7 @@ export function priceChart(container, { candles, overlays = [], markers = [], le
     canvas.style.height = H + 'px';
     const ctx = canvas.getContext('2d');
     ctx.scale(dpr, dpr);
+    demoWatermark(ctx, W, H);
     ctx.clearRect(0, 0, W, H);
 
     const c = {

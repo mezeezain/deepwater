@@ -144,23 +144,29 @@ export function liqPrice(entry, lev, side, mmr = 0.005) {
 }
 
 /**
- * Estimated liquidation levels over time.
- * Each bar's newly opened longs (or shorts) are spread across leverage tiers, giving levels below
- * (or above) the entry. A level is removed once a later candle trades through it.
+ * Illustrative liquidation levels over time.
+ * Every new contract has a long and a short holder, so each bar's open interest increase adds levels on
+ * both sides: longs below the entry, shorts above, spread across leverage tiers. The tier weights and a
+ * flat maintenance margin are assumptions (Binance uses tiered margin, and cross-margin positions
+ * liquidate elsewhere), so these are rough zones, not exact prices. A level is removed once a later
+ * candle trades through it. maxLev drops tiers a pair doesn't offer and reweights the rest.
  * Returns { columns: [[{ price, usd, side }...] per bar], active: levels still standing at the end }.
  */
-export function liquidationLevels(bars, market, { tiers = LEVERAGE_TIERS, mmr = 0.005 } = {}) {
+export function liquidationLevels(bars, market, { tiers = LEVERAGE_TIERS, mmr = 0.005, maxLev = 100 } = {}) {
+  const usable = tiers.filter((t) => t.lev <= maxLev);
+  const total = usable.reduce((s, t) => s + t.weight, 0) || 1;
   let active = [];
   const columns = [];
   bars.forEach((b, i) => {
     // Wick erasure: anything this candle traded through is gone.
     active = active.filter((lv) => (lv.side === 'long' ? b.l > lv.price : b.h < lv.price));
     const m = market[i];
-    const side = m.regime === 'longs-opened' ? 'long' : m.regime === 'shorts-opened' ? 'short' : null;
-    if (side && m.oiDelta > 0) {
+    if (m.oiDelta > 0) {
       const entry = (b.h + b.l + b.c) / 3;
-      for (const { lev, weight } of tiers) {
-        active.push({ price: liqPrice(entry, lev, side, mmr), usd: m.oiDelta * weight, side, lev, bornT: b.t });
+      for (const side of ['long', 'short']) {
+        for (const { lev, weight } of usable) {
+          active.push({ price: liqPrice(entry, lev, side, mmr), usd: m.oiDelta * (weight / total), side, lev, bornT: b.t });
+        }
       }
     }
     columns.push(active.slice());
@@ -220,7 +226,7 @@ function median(arr) {
  * Setup check: four questions to ask before trusting a move, answered from the last `lookback` bars.
  * Each item: { id, label, state: 'good' | 'warn' | 'bad' | 'na', detail }
  */
-export function setupCheck(bars, market, whales, { lookback = 12, levels = [], entries: entriesIn = null, whaleShare = null } = {}) {
+export function setupCheck(bars, market, whales, { lookback = 12, levels = [], entries: entriesIn = null, whaleShare = null, whaleName = 'Whales' } = {}) {
   const n = bars.length;
   if (n < lookback + 1) return [];
   const from = n - 1 - lookback;
@@ -249,10 +255,10 @@ export function setupCheck(bars, market, whales, { lookback = 12, levels = [], e
     const opensL = recent.reduce((s, w) => s + (w.opensLong || 0), 0);
     const opensS = recent.reduce((s, w) => s + (w.opensShort || 0), 0);
     if (opensL === 0 && opensS === 0) {
-      items.push({ id: 'whales', label: 'No whale position changes in this window', state: 'na', detail: `Whales haven't added to either side in the last ${lookback} candles.` });
+      items.push({ id: 'whales', label: `No ${whaleName.toLowerCase()} position changes in this window`, state: 'na', detail: `${whaleName} haven't added to either side in the last ${lookback} candles.` });
     } else {
     const state = opensL > opensS * 1.2 ? 'good' : opensS > opensL * 1.2 ? 'bad' : 'warn';
-    items.push({ id: 'whales', label: state === 'good' ? 'Whales are opening longs' : state === 'bad' ? 'Whales are opening shorts' : 'Whale opens are balanced', state, detail: `${entriesIn ? 'Whale' : 'Estimated whale'} opens: longs ${usd(opensL)}, shorts ${usd(opensS)}.` });
+    items.push({ id: 'whales', label: state === 'good' ? `${whaleName} are opening longs` : state === 'bad' ? `${whaleName} are opening shorts` : `${whaleName} opens are balanced`, state, detail: `${entriesIn ? 'Whale' : 'Estimated whale'} opens: longs ${usd(opensL)}, shorts ${usd(opensS)}.` });
     }
   } else {
     items.push({ id: 'whales', label: 'Whale data unavailable', state: 'na', detail: 'Binance has no top-trader data for this pair.' });
@@ -265,7 +271,8 @@ export function setupCheck(bars, market, whales, { lookback = 12, levels = [], e
     const strong = share > 0.6 && crowd < 0.4;
     const gap = (share - crowd) * 100;
     const state = strong ? 'good' : gap > 5 ? 'warn' : gap < -5 ? 'bad' : 'na';
-    items.push({ id: 'gap', label: strong ? 'Crowd is short against long whales' : gap > 5 ? 'Whales longer than the crowd' : gap < -5 ? 'Whales shorter than the crowd' : 'Whales and crowd agree', state, detail: `Whales ${Math.round(share * 100)}% long, crowd ${Math.round(crowd * 100)}% long (gap ${gap > 0 ? '+' : ''}${Math.round(gap)}).` });
+    const w = whaleName;
+    items.push({ id: 'gap', label: strong ? `Crowd is short against long ${w.toLowerCase()}` : gap > 5 ? `${w} longer than the crowd` : gap < -5 ? `${w} shorter than the crowd` : `${w} and crowd agree`, state, detail: `${w} ${Math.round(share * 100)}% long, crowd ${Math.round(crowd * 100)}% long (gap ${gap > 0 ? '+' : ''}${Math.round(gap)}).` });
   }
 
   // 4. Where is price against whale cost basis and liquidation clusters?

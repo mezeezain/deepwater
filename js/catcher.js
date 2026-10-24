@@ -197,7 +197,7 @@ export class Catcher {
           return;
         }
         if (inCooldown(symbol, this.signals, this.now(), this.cfg)) return;
-        const sig = createSignal({ symbol, price: tk.price, t: this.now(), rise: sc.rise, impulse: sc.impulse, ctx, gap: res.gap });
+        const sig = createSignal({ symbol, price: tk.price, t: this.now(), rise: sc.rise, impulse: sc.impulse, ctx, gap: res.gap, cfg: this.cfg, belowHigh: sc.belowHigh });
         sig.whale = whale;
         this.signals.unshift(sig);
         this.candidates.delete(symbol);

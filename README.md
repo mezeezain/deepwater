@@ -20,13 +20,13 @@ Add `?demo` to the URL to use a simulated market. The app also switches to demo 
 
 | Screen | Route | What it does |
 |---|---|---|
-| Whales vs crowd | `#whales` | Top traders' long share against all accounts for the 60 most traded pairs. Rankings for biggest gap, whales most long/short, biggest 24h shift and **contrarian setups** (whales against a lopsided crowd). Sortable, filterable, watchlist (★), copy as CSV |
+| Whales vs crowd | `#whales` | Binance Smart Money whales' long share (by size) against all accounts for the 60 most traded pairs; pairs without Smart Money data use Binance's top 20% of accounts instead (marked T20). Rankings for biggest gap, whales most long/short, biggest 24h shift and **contrarian setups** (whales against a lopsided crowd). Sortable, filterable, watchlist (★), copy as CSV |
 | Pair page | `#SOLUSDT` | Indicator chart (5m–1d) with selectable layers, a four-point setup check, biggest whale moves and funding. See "Chart layers" |
 | Charts | `#charts` | The pair page for the last pair you opened |
-| Liquidation map | `#liqmap-SOLUSDT` | Estimated liquidation levels over time, cleared when a wick trades through them, with the live order book, walls (size vs typical, how long they've rested) and whale entry estimates |
-| Pump catcher | `#pumps` | Scans every USDT perpetual every 5 seconds, fires alerts and tracks each one until the move ends (see below) |
+| Liquidation map | `#liqmap-SOLUSDT` | Illustrative liquidation zones on both sides of each open interest increase, cleared when a wick trades through them, with an adjustable leverage cap, the live order book, walls (size vs typical, how long they've rested) and Smart Money whale entries |
+| Pump catcher | `#pumps` | Scans every USDT perpetual every 5 seconds, fires alerts and tracks each to a realised exit; shared log across devices, track record after costs, backtest (see below) |
 | Signal page | `#sig-<pair>-<time>` | Chart around one alert with alert, peak and dip lines, why it fired, and how it closed |
-| Liquidations | `#liquidations` | Live forced liquidations by pair, long vs short |
+| Liquidations | `#liquidations` | A live sample of forced liquidations by pair, long vs short (Binance's stream sends at most one per pair per second) |
 | Heatmap | `#heatmap` | Pairs sized by volume, coloured by 24h change or funding |
 | Funding | `#funding` | Every pair's funding, yearly equivalent, time to next payment |
 | Calculator | `#calculator` | Profit after fees, return on margin, break-even and estimated liquidation price |
@@ -37,12 +37,10 @@ Price is treated as the result; positioning and order flow are what move it. Tog
 
 | Layer | How it's calculated |
 |---|---|
-| Whales vs crowd | Top traders' long share (by position) vs all accounts. Falls back to top accounts when position data is missing |
-| Whale moves (est.) | Change in estimated whale net exposure: top-trader long share × open interest. Grey dots mark a share jump with flat open interest, which is likely a change in who ranks as a top trader, not a trade, so it is left out |
-| Whale opens (est.) | Only the increase in whale long or short exposure; closures are excluded, so short covering doesn't look like buying |
-| Whale net position (est.) | Estimated whale longs minus shorts |
-| Whale entry lines (est.) | Price weighted by estimated whale opens in the window, for longs and shorts |
-| Net longs / shorts (est.) | Each candle's open interest change, assigned by the aggressive side: OI up + net buying = longs opened, OI up + net selling = shorts opened, OI down + net buying = shorts closed, OI down + net selling = longs closed |
+| Whales vs crowd | Smart Money whales' long share by size (exact, from the whale data server), Binance's top 20% of accounts by margin balance (by position), and all accounts |
+| Whale moves / opens / net position | Exact from Smart Money snapshots (see "Exact whale data"). Without that data they become **Top-20% tilt × OI (est.)**: the top-20% long share applied to total open interest. That mostly redraws open interest, since the top 20% is thousands of accounts and many hedge, so it is labelled as an estimate and named after its formula |
+| Whale entry lines | Smart Money whales' average long and short entries. Only shown with exact data; there is no estimated version |
+| OI by aggressor (est.) | Every new contract opens a long and a short. This assigns each candle's open interest change to the aggressive (taker) side: OI up + net buying = longs opened, OI up + net selling = shorts opened, OI down + net buying = shorts closed, OI down + net selling = longs closed. It shows who pushed, not who is now positioned |
 | CVD | Running sum of taker buy minus taker sell volume |
 | Open interest | Open contracts valued in USDT |
 | Liquidations (est.) | Open interest drops at least 2× the usual change, on a candle at least 1.5× the usual range, with one-sided taker flow |
@@ -52,9 +50,11 @@ Price is treated as the result; positioning and order flow are what move it. Tog
 
 **Setup check** answers four questions from the last 12 candles: is the move driven by new longs or by short covering, are whales opening longs, is the crowd on the wrong side, and is price near the whale entry with liquidations stacked overhead. It also appears on each pump signal's page.
 
-**Liquidation map:** each candle's estimated new longs or shorts are spread across 10×, 25×, 50× and 100× leverage (35/30/20/15%). Long liquidation price ≈ entry × (1 − 1/leverage + 0.5%), and short ≈ entry × (1 + 1/leverage − 0.5%). Levels are grouped into 0.25% price buckets and removed once a candle trades through them. The order book refreshes every 15 seconds while the page is open.
+**Liquidation map (illustrative):** each candle's open interest increase adds levels on **both** sides, since every new contract has a long and a short holder, spread across 10×, 25×, 50× and 100× leverage (35/30/20/15%, reweighted when you lower the leverage cap; altcoins default to 50×). These weights and the flat margin are assumptions, not Binance data, and cross-margin positions liquidate elsewhere. Long liquidation price ≈ entry × (1 − 1/leverage + 0.5%), and short ≈ entry × (1 + 1/leverage − 0.5%). Levels are grouped into 0.25% price buckets and removed once a candle trades through them. The order book refreshes every 15 seconds while the page is open.
 
 Everything marked *est.* is an estimate: Binance publishes ratios and totals, not individual positions or entry prices.
+
+**Freshness.** Under the chart, the page says when the newest 5-minute positioning snapshot was taken (later candles repeat it) and how old the Smart Money data is.
 
 ## Exact whale data (whale data server)
 
@@ -115,28 +115,48 @@ API: `GET /api/health`, `GET /api/overview` (latest numbers for every pair), `GE
 
 A pair has to pass three gates before it fires:
 
-1. **Lift-off.** Price is 4.5–18% above its rolling 24h low and moved at least 1.5% in the last 5 minutes. Below the band it's noise; above it the move is usually spent.
-2. **Fuel.** Last 5 minutes of volume is at least 2.5× the recent average, taker buys are at least 56% of volume (positive CVD), and open interest rose at least 1.5% in 15 minutes, so new positions are opening rather than shorts just closing.
-3. **Positioning.** Whales are more than 5 points longer than the crowd, or the crowd is under 40% long (short-squeeze fuel). This gate can be switched off.
+1. **Lift-off.** Price is 4.5–18% above its rolling 24h low, moved at least 1.5% in the last 5 minutes, and is no more than 20% below its 24h high. The last condition separates a breakout from a bounce after a drop.
+2. **Order flow.** Volume over the last 5 minutes is at least 2.5× the recent average (average per minute × 5), taker buys are at least 56% of volume, and **real-time** open interest is up at least 1.5% on its level 15 minutes earlier.
+3. **Positioning.** Binance's top 20% of accounts are more than 5 points longer than all accounts, or all accounts are under 40% long. This gate can be switched off.
 
-After an alert, the signal is tracked:
+**Exits and results.** Each signal closes at its stop, after giving back 45% of a gain over 8%, or after 72 hours. The stop is a fixed 5% by default, or optionally a volatility-based stop: 3× the pair's typical 5-minute range, kept within 3–12%. The **exit price is stored**, and the track record reports **realised** results after an assumed 0.15% round-trip cost:
+- win rate, average win and average loss;
+- **expectancy** per signal;
+- how often the stop was hit.
 
-- **Rise after alert:** the best gain since the alert, and how long it took.
-- **Dip before peak:** the lowest point between the alert and that best gain. A drawdown *after* the peak doesn't change it.
-- **Closes** when price falls 5% below the alert, gives back 45% of a gain over 8%, or after 72 hours.
+The best price reached ("peak") is still shown, but labelled as the best case. Open signals are counted separately.
+
+**Rules per signal.** Each alert stores the settings it fired with (a rule-set id such as `r2e4f63`), and its exit rules stay fixed after later Settings changes. The track record can show the current rule set on its own, so different settings never blend into one number.
 
 **Whale context (with a whale data server).** Each alert records where Binance Smart Money whales stood at the alert price:
 - their long share by size;
 - the distance to their average long and short entries;
 - whether their shorts are losing money there (squeeze fuel).
 
-This shows in the **Whales** column, on the signal page and in Telegram alerts. It's context, not part of the trigger, because Binance recalculates this data infrequently. An optional setting, **Only alert when whale bias agrees** (off by default), skips alerts where whales lean short and their shorts aren't losing. Pairs without whale data are never blocked. Compare hit rates before relying on it.
+This is context, not part of the trigger. An optional filter, off by default, skips alerts where whales lean short and their shorts aren't losing.
 
-Every threshold can be changed under **Settings** on the page. The defaults are a reasonable starting point, not tuned values. The page shows the 30-day hit rate (share of alerts that reached +10%) and median rise and dip, so you can see whether a change helps.
+### Shared signal log
 
-Cost: screening uses the all-market ticker stream (one WebSocket). Only pairs that pass gate 1 trigger REST lookups: 4 light requests, at most once a minute per pair and 6 at a time.
+When the site can reach your server, the Pump catcher page shows the **shared log**: one record built by `worker/catcher.mjs` scanning around the clock. Every device then sees the same alerts and the same track record, and new alerts still pop up and beep in the browser. Without the server, the page scans in the browser instead, labelled **This browser only**: it scans only while the page is open and keeps its own log. You can switch between the two on the page.
 
-The browser keeps a 30-day signal log in `localStorage`, and when you reopen the page it catches up tracking signals from 1-minute candles. It only scans while the page is open, so for round-the-clock alerts use the worker.
+The site's default server is `DEFAULT_WHALE_SERVER` in `js/api.js`. Change it if you fork the project.
+
+### Backtest
+
+`tools/backtest.mjs` replays the exact engine over Binance's recent history:
+- the most traded pairs, 29 days plus a day of warm-up;
+- 1-minute candles, and 5-minute open interest and long/short ratios.
+
+It tunes a small grid of settings on the first 19 days, then tests the chosen settings on the last 10 days, which the tuning never saw, after costs:
+
+```bash
+node tools/backtest.mjs              # ~20–30 minutes for 40 pairs (paced for Binance's limits)
+node tools/backtest.mjs --demo       # synthetic data, checks the tool runs
+```
+
+The report goes to `worker/data/backtest.json`. The pump catcher server publishes it at `/api/backtest`, and the Pump catcher page shows it. The setup script runs it every Sunday.
+
+A replay differs from live scanning: it compares 5-minute open interest snapshots, fires at minute closes, has no Smart Money filter (Binance keeps no history), and assumes green candles hit their low before their high. Treat its numbers as an upper bound. Until the test period shows a positive expectancy after costs, treat this as a positioning dashboard, not a signal service.
 
 ### Background worker with Telegram alerts
 
@@ -156,6 +176,8 @@ CATCHER_CONFIG='{"minRise":5,"minRvol":3}' node worker/catcher.mjs
 WHALE_SERVER=http://localhost:8787 node worker/catcher.mjs
 ```
 
+The pump catcher worker also serves the shared log (`/api/catcher`, port 8788) and the backtest (`/api/backtest`). On a server set up with `deploy/setup.sh`, it runs as the `catcher` service, with settings in `/etc/deepwater/catcher.env` (Telegram, `CATCHER_CONFIG`); restart it with `sudo systemctl restart catcher`. Posting alerts to a public Telegram channel can make them look like a signal service, so check the rules where you and your subscribers live first.
+
 To get a bot token, message @BotFather on Telegram. To get the chat ID, add the bot to your channel and send a message, then open `https://api.telegram.org/bot<token>/getUpdates`. Signals are saved to `worker/signals.json`. Run it with `pm2`, `systemd` or a Docker container on a VPS in a region Binance serves.
 
 ### Tests
@@ -164,16 +186,25 @@ To get a bot token, message @BotFather on Telegram. To get the chat ID, add the 
 node --test
 ```
 
-These cover the gates, order-flow maths, rise and dip accounting (including that a post-peak drawdown doesn't change the dip before peak), the close rules, catch-up from candles, cooldown and the summary stats.
+These cover:
+- the gates, including the bounce filter, and the order-flow maths, including the volume baseline;
+- peak and dip accounting, the close rules and stops, exits and realised results;
+- rule sets stored per signal, and stats that count only closed signals;
+- catch-up from candles, and cooldown;
+- the indicators, the Smart Money parsing and snapshot diffs, the whale context and filter;
+- the backtest replay.
 
 ## Limits
 
-- **"Whales"** are Binance's top traders by position size (`topLongShortPositionRatio`). Binance doesn't publish trader counts or profitability, so there's no fallback for pairs with few whales.
-- **Whale dollar positions, entry prices and PnL** aren't in Binance's public API. They're exact only with the whale data server; otherwise they're estimated from the top-trader ratio and open interest. Exact history starts when the server starts, so older candles have no exact values.
-- **Positioning history** (open interest, long/short ratios) only goes back 30 days and isn't available at the weekly interval.
+- **Two different "whale" groups.** *Smart Money whales* (whale data server) are Binance's large, consistently profitable accounts, with exact positions. The public `topLongShortPositionRatio` is Binance's **top 20% of accounts by margin balance**, thousands of accounts on major pairs and many of them hedging. The app labels the second group "Top 20%" (and T20 in the table).
+- **Smart Money data updates infrequently** (about daily when checked), and exact history starts when your server starts.
+- **Positioning history** (open interest, long/short ratios) only goes back 30 days, comes in 5-minute snapshots, and isn't available at the weekly interval.
+- **Liquidations** on the live screen are a sample: Binance's stream sends at most one per pair per second. The liquidation map is illustrative.
 - **Order book history** isn't available from Binance, so walls are tracked only while the map is open.
+- **Signal prices are futures prices.** Real fills come later, with fees and slippage. Spot markets can differ, and some perpetuals have no spot market; the signal page says which.
+- **Peak and dip** are measured from live prices about once a second. Brief wicks between updates can be missed. Catch-up after a gap uses 1-minute candles and assumes green candles hit their low before their high.
+- **Demo mode** appears only when the address has `?demo`, or when Binance can't be reached. In that case a full-width banner, a DEMO badge, the tab title and a chart watermark say so, and the app keeps retrying and switches back to live data by itself.
 - **Not included:** listings on other exchanges (no free data source) and chart drawing tools.
-- **Rise and dip** in the browser are measured from live prices about once a second. Brief wicks between updates can be missed, except during catch-up, which uses candle highs and lows.
 
 ## Code layout
 
@@ -181,6 +212,7 @@ These cover the gates, order-flow maths, rise and dip accounting (including that
 index.html              shell: top bar, status strip, <main>
 css/app.css             theme tokens (light + dark) and all component styles
 js/engine.js            pump catcher rules: pure functions, shared by browser and worker
+js/backtest.js          replays the engine over historical data, tune/test split (pure functions)
 js/smartmoney.js        Smart Money parsing, cohort choice, snapshot diffs (moves, opens, roster changes)
 js/smartmoney-demo.js   simulated Smart Money snapshots for demo mode
 js/indicators.js        chart layers, liquidation levels, order book walls, setup check (pure functions)
@@ -188,14 +220,16 @@ js/multichart.js        stacked canvas chart: candles plus indicator panes, shar
 js/catcher.js           scanner loop: ticker stream, screening, confirmation, tracking
 js/binance.js           Binance source for the catcher (fetch + WebSocket only)
 js/demo-market.js       simulated market with the same interface
-js/catcher-app.js       browser instance, alerts (toast, sound, desktop notification)
+js/catcher-app.js       browser scanner or shared server log, alerts (toast, sound, desktop notification)
 js/api.js               Binance client for the other screens: request queue, cache, live/demo switch
 js/demo.js              sample data for the other screens
 js/util.js              h() DOM helper, formatters, watchlist, CSV
 js/chart.js             canvas candle chart with share overlays and level lines; SVG sparkline
 js/app.js               hash router and navigation
 js/views/*.js           one file per screen; each returns a cleanup function
-worker/catcher.mjs      Node worker with Telegram alerts
+worker/catcher.mjs      Node worker: round-the-clock scanning, shared signal log API, Telegram alerts
+tools/backtest.mjs      downloads Binance history and runs the backtest
+deploy/setup.sh         one-step VPS setup: both servers, firewall, DuckDNS, HTTPS, weekly backtest
 worker/smartmoney.mjs   whale data server: polls Smart Money data, stores snapshots, serves the app
 test/*.test.mjs         engine and indicator tests (node --test)
 ```

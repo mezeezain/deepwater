@@ -3,7 +3,7 @@
 import { getChartData, getDepth, getSmartHistory } from '../api.js';
 import { pickCohort, summarize } from '../smartmoney.js';
 import { marketLayers, whaleLayers, whaleEntries, liquidationLevels, bucketLevels, findWalls, fmtCompact } from '../indicators.js';
-import { h, ticker, fmtPrice, cssVar, store } from '../util.js';
+import { h, ticker, fmtPrice, cssVar, store, demoWatermark } from '../util.js';
 
 const INTERVALS = { '5m': 288, '15m': 288, '1h': 300 };
 const BUCKET_PCT = 0.25;
@@ -13,6 +13,11 @@ export function liqmapView(root, { symbol, go }) {
   symbol = symbol || store.get('last-pair', 'BTCUSDT');
   store.set('last-pair', symbol);
   let interval = store.get('liqmap-interval', '15m');
+  // Highest leverage assumed for this pair. Binance allows 100×+ on majors but often 20–75× on altcoins.
+  let maxLev = store.get('liqmap-lev-' + symbol, /^(BTC|ETH)USDT$/.test(symbol) ? 100 : 50);
+  const levSelect = h('label.field.inline', h('span', 'Max leverage'),
+    h('select#liq-lev', { onchange: (e) => { maxLev = +e.target.value; store.set('liqmap-lev-' + symbol, maxLev); load(); } },
+      ...[10, 25, 50, 100].map((v) => h('option', { value: v, selected: v === maxLev }, `${v}×`))));
   let model = null;
   let book = null;
   const wallSeen = new Map(); // "side:bucket" -> first seen time
@@ -45,13 +50,14 @@ export function liqmapView(root, { symbol, go }) {
   root.replaceChildren(
     h('section.hero.compact',
       h('div.hero-text',
-        h('p.eyebrow', 'Estimated from open interest · order book live'),
+        h('p.eyebrow', 'Illustrative · estimated from open interest · order book live'),
         h('h1', `${ticker(symbol)} liquidation map`),
-        h('p.lede', 'Bright bands are prices where positions opened in this window would be liquidated at 10–100× leverage. A band disappears once price trades through it. The right column is the live order book with large walls labelled.'),
+        h('p.lede', 'Bright bands are rough zones where positions opened in this window could be liquidated, assuming a spread of leverage up to the maximum you pick. Each new contract adds a long and a short, so both sides get bands. A band disappears once price trades through it. The right column is the live order book.'),
+        h('p.note', 'Assumptions, not Binance data: the leverage mix (35/30/20/15% across 10/25/50/100×), a flat 0.5% maintenance margin (Binance uses tiers), and isolated margin (cross-margin positions liquidate elsewhere). Use it for context, not as exact levels to trade against.'),
       ),
     ),
     h('section.panel',
-      h('div.toolbar', pairForm, intervalBar, h('button.btn.ghost', { onclick: () => go('token', symbol) }, `${ticker(symbol)} chart →`)),
+      h('div.toolbar', pairForm, intervalBar, levSelect, h('button.btn.ghost', { onclick: () => go('token', symbol) }, `${ticker(symbol)} chart →`)),
       box,
       h('div.legend',
         h('span.key.heat', 'Estimated liquidations'),
@@ -87,7 +93,7 @@ export function liqmapView(root, { symbol, go }) {
       }
       const market = marketLayers(raw.bars);
       const whales = whaleLayers(raw.bars);
-      const { columns, active } = liquidationLevels(raw.bars, market);
+      const { columns, active } = liquidationLevels(raw.bars, market, { maxLev });
       model = { bars: raw.bars, columns, active, entries: whaleEntries(raw.bars, whales), exactEntries: false };
       // Prefer exact average entries from the whale data server.
       const last = smartHist?.snapshots?.at(-1);
@@ -319,6 +325,7 @@ export function liqmapView(root, { symbol, go }) {
       ctx.strokeStyle = col.fg;
       ctx.strokeRect(8 + hover.i * cw, g.top + hover.k * cellH, Math.max(2, cw), Math.max(2, cellH));
     }
+    demoWatermark(ctx, g.W, g.H);
     model.geo = { ...g, cw, cellH, nb, step };
   }
 

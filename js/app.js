@@ -1,5 +1,5 @@
 // App shell: navigation, routing by #hash, live/demo status.
-import { status, ensureMode, setDemo } from './api.js';
+import { status, ensureMode, setDemo, retryLive } from './api.js';
 import { h, $, store } from './util.js';
 import { whalesView } from './views/whales.js';
 import { tokenView } from './views/token.js';
@@ -51,11 +51,11 @@ function render() {
   nav.querySelectorAll('a').forEach((a) => a.setAttribute('aria-current', a.dataset.route === navRoute ? 'page' : 'false'));
   const view = route === 'token' ? tokenView : route === 'signal' ? signalView : ROUTES[route].view;
   dispose = view(main, { symbol, id, go }) || (() => {});
-  document.title =
+  document.title = (status.mode === 'demo' ? 'DEMO · ' : '') + (
     route === 'token' ? `${symbol.replace(/USDT$/, '')} · Deepwater`
     : route === 'liqmap' && symbol ? `${symbol.replace(/USDT$/, '')} liquidation map · Deepwater`
     : route === 'signal' ? `${id.split('-')[0].replace(/USDT$/, '')} signal · Deepwater`
-    : `Deepwater · ${ROUTES[route].label}`;
+    : `Deepwater · ${ROUTES[route].label}`);
 }
 
 nav.replaceChildren(...Object.entries(ROUTES).map(([id, r]) => h('a', { href: '#' + id, 'data-route': id }, r.label)));
@@ -68,16 +68,37 @@ $('#jump').addEventListener('submit', (e) => {
   $('#jump-input').value = '';
 });
 
+const statusbar = $('#statusbar');
+const demoPill = $('#demo-pill');
+let countdown;
+
 function paintStatus(mode, reason) {
+  const demo = mode === 'demo';
   banner.dataset.mode = mode;
+  statusbar.dataset.mode = mode;
+  demoPill.hidden = !demo;
+  document.documentElement.dataset.demo = demo ? '1' : '';
+  if (!document.title.startsWith('DEMO · ') && demo) document.title = 'DEMO · ' + document.title;
+  clearInterval(countdown);
   if (mode === 'live') {
     banner.replaceChildren(h('span.dot'), 'Live data from Binance');
   } else if (mode === 'demo') {
+    const retry = h('span.retry');
+    const tick = () => {
+      const s = status.nextRetry ? Math.max(0, Math.round((status.nextRetry - Date.now()) / 1000)) : null;
+      retry.textContent = status.chosen ? '' : s != null ? `Checking Binance again in ${s} s.` : '';
+    };
+    tick();
+    if (!status.chosen) countdown = setInterval(tick, 1000);
     banner.replaceChildren(
       h('span.dot'),
-      h('span', h('strong', 'Demo data. '), reason ? reason + ' ' : '', 'Numbers are made up so you can try every screen.'),
-      h('button.link', { onclick: () => setDemo(false) }, 'Try live data'),
+      h('span', h('strong', 'DEMO DATA: simulated, not real market prices. '), reason ? reason + ' ' : '', retry),
+      status.chosen
+        ? h('button.btn', { onclick: () => setDemo(false) }, 'Switch to live data')
+        : h('button.btn', { onclick: async (e) => { e.target.disabled = true; e.target.textContent = 'Checking…'; if (!(await retryLive())) { e.target.disabled = false; e.target.textContent = 'Try live now'; } } }, 'Try live now'),
     );
+  } else if (mode === 'reconnected') {
+    banner.replaceChildren(h('span.dot'), h('strong', reason));
   } else {
     banner.replaceChildren(h('span.dot'), 'Connecting to Binance…');
   }

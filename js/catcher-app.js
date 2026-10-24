@@ -1,6 +1,9 @@
-// The browser's single pump catcher instance. Starts on first use and keeps
-// scanning while you move between screens.
-import { get, isDemo, getSmartOverview } from './api.js';
+// The browser's pump catcher. Two modes:
+//   shared – reads the signal log published by worker/catcher.mjs on your server, so every device
+//            shows the same record, built from round-the-clock scanning;
+//   local  – scans in this browser while the page is open and keeps its own 30-day log.
+// Shared is used whenever the server answers; local is the fallback (and demo mode is always local).
+import { get, isDemo, getSmartOverview, whaleServer } from './api.js';
 import { createBinanceSource } from './binance.js';
 import { createDemoMarket, demoHistory } from './demo-market.js';
 import { Catcher } from './catcher.js';
@@ -14,8 +17,28 @@ export function getCatcher() {
   return instance;
 }
 
+/** 'auto' (shared when the server answers) or 'local'. Changing it reloads the page. */
+export const catcherMode = {
+  get: () => store.get('catcher-mode', 'auto'),
+  set(mode) {
+    store.set('catcher-mode', mode);
+    location.reload();
+  },
+};
+
 async function boot() {
   const demo = await isDemo();
+  if (!demo && catcherMode.get() !== 'local') {
+    const shared = await SharedCatcher.connect(whaleServer.get());
+    if (shared) {
+      shared.on('alert', notify);
+      return shared;
+    }
+  }
+  return bootLocal(demo);
+}
+
+async function bootLocal(demo) {
   const source = demo ? createDemoMarket() : createBinanceSource({ get: (path, params) => get(path, params, 30_000) });
   // Demo and live signals are kept apart so invented numbers never mix with real ones.
   const key = demo ? 'signals-demo' : 'signals';
@@ -39,12 +62,109 @@ async function boot() {
   };
   const catcher = new Catcher({ source, store: signalStore, cfg: store.get('catcher-cfg', {}), whaleLookup });
   catcher.demo = demo;
+  catcher.mode = 'local';
+  catcher.pairsCount = null;
   catcher.on('alert', notify);
   await catcher.start();
   return catcher;
 }
 
+/**
+ * Read-only view of the server's pump catcher, refreshed every 10 seconds.
+ * Same surface the pages use from Catcher: signals, cfg, state, lastEval, nearMisses(), on(), source.
+ */
+class SharedCatcher {
+  static async connect(base) {
+    if (!base) return null;
+    try {
+      const body = await fetchJson(`${base}/api/catcher`);
+      if (body.demo) return null; // a demo-mode server would show invented signals as if real
+      return new SharedCatcher(base, body);
+    } catch {
+      return null;
+    }
+  }
+
+  constructor(base, body) {
+    this.base = base;
+    this.mode = 'shared';
+    this.demo = false;
+    this.listeners = new Map();
+    this.source = createBinanceSource({ get: (path, params) => get(path, params, 30_000) });
+    this.error = null;
+    this.apply(body, true);
+    this.timer = setInterval(() => this.poll(), 10_000);
+  }
+
+  apply(body, first = false) {
+    const known = new Set((this.signals || []).map((s) => s.id));
+    this.signals = body.signals || [];
+    this.cfg = { ...DEFAULTS, ...body.cfg };
+    this.cfgId = body.cfgId;
+    this.state = body.state;
+    this.lastEval = body.lastEval;
+    this.startedAt = body.startedAt;
+    this.pairsCount = body.pairs;
+    this.near = body.near || [];
+    this.receivedAt = Date.now();
+    // New alerts since the last poll (not the whole log on first load) go to the alert toast and sound.
+    if (!first) for (const s of this.signals) if (!known.has(s.id) && Date.now() - s.alertT < 10 * 60_000) this.emit('alert', s);
+  }
+
+  async poll() {
+    try {
+      this.apply(await fetchJson(`${this.base}/api/catcher`));
+      this.error = null;
+    } catch (e) {
+      this.error = e.message;
+    }
+    this.emit('change');
+  }
+
+  nearMisses() {
+    return this.near;
+  }
+
+  get tickers() {
+    return { size: this.pairsCount ?? 0, get: () => null };
+  }
+
+  on(event, fn) {
+    if (!this.listeners.has(event)) this.listeners.set(event, new Set());
+    this.listeners.get(event).add(fn);
+    return () => this.listeners.get(event).delete(fn);
+  }
+
+  emit(event, payload) {
+    this.listeners.get(event)?.forEach((fn) => fn(payload));
+  }
+}
+
+async function fetchJson(url) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(url, { cache: 'no-store', signal: ctrl.signal });
+    if (!res.ok) throw new Error(`server answered HTTP ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Latest backtest published by the server, or null. */
+export async function getBacktest() {
+  const base = whaleServer.get();
+  if (!base || (await isDemo())) return null;
+  try {
+    return await fetchJson(`${base}/api/backtest`);
+  } catch {
+    return null;
+  }
+}
+
 export function saveConfig(catcher, patch) {
+  if (catcher.mode !== 'local') return;
   catcher.setConfig(patch);
   const diff = Object.fromEntries(Object.entries(catcher.cfg).filter(([k, v]) => DEFAULTS[k] !== v));
   store.set('catcher-cfg', diff);
