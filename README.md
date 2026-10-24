@@ -25,6 +25,7 @@ Add `?demo` to the URL to use a simulated market. The app also switches to demo 
 | Charts | `#charts` | The pair page for the last pair you opened |
 | Liquidation map | `#liqmap-SOLUSDT` | Illustrative liquidation zones on both sides of each open interest increase, cleared when a wick trades through them, with an adjustable leverage cap, the live order book, walls (size vs typical, how long they've rested) and Smart Money whale entries |
 | Pump catcher | `#pumps` | Scans every USDT perpetual every 5 seconds, fires alerts and tracks each to a realised exit; shared log across devices, track record after costs, backtest (see below) |
+| Live setups | `#ideas` | Setups live right now on BTC, ETH and SOL (or up to 5 pairs you choose) on 15m, 1h and 4h: exact entry, stop, TP1/TP2/TP3, an A/B/C evidence grade (setup record after costs, top 20% vs crowd and its trend, Smart Money whales, next timeframe's trend, funding, costs vs stop), the record of comparable past trades, live price checks (stop hit, don't chase), where the next setups would trigger, and optional sound/desktop alerts. Refreshes at every candle close |
 | Setups lab | `#setups` | Sweep reclaim, breakout retest and regime confluence replayed on up to 1,500 candles (15m/1h/4h) with real costs: paper win rate (TP1 touched) beside net win rate, profit factor and expectancy in R after fees, slippage and funding, split by whether Binance's top 20% leaned the trade's way. Latest setups with Smart Money context. See "Setups lab" |
 | Signal page | `#sig-<pair>-<time>` | Chart around one alert with alert, peak and dip lines, why it fired, and how it closed |
 | Liquidations | `#liquidations` | A live sample of forced liquidations by pair, long vs short (Binance's stream sends at most one per pair per second) |
@@ -253,6 +254,7 @@ worker/catcher.mjs      Node worker: round-the-clock scanning, shared signal log
 tools/backtest.mjs      downloads Binance history and runs the backtest
 js/setups.js            setups lab: indicators, setups, realistic execution, whale split (pure functions)
 tools/setups.mjs        setups lab over many pairs, from a server
+js/ideas.js             live setups: active plans, evidence grade, comparable history, trigger levels (pure functions)
 deploy/setup.sh         one-step VPS setup: both servers, firewall, DuckDNS, HTTPS, weekly backtest
 worker/smartmoney.mjs   whale data server: polls Smart Money data, stores snapshots, serves the app
 test/*.test.mjs         engine and indicator tests (node --test)

@@ -427,3 +427,40 @@ h3 { margin: 0 0 6px; font: 600 13px/1.3 var(--font-body); color: var(--muted); 
   .toolbar .field.inline:has(#lab-pairs) { flex: 1 1 100%; }
 }
 .grid td.txt { text-align: left; }
+
+/* Live setups */
+#ideas-pairs { width: 180px; max-width: 100%; }
+.ideas { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); gap: 16px; }
+.idea { gap: 10px; }
+.idea.grade-a { border-color: var(--long); box-shadow: 0 0 0 3px var(--long-soft); }
+.idea.grade-c { opacity: 0.85; }
+.idea-head { display: flex; gap: 12px; align-items: flex-start; }
+.idea-title { flex: 1; min-width: 0; }
+.idea-title h2 { margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.idea-title h2 .sub { color: var(--muted); font-size: 13px; font-weight: 400; }
+.grade { flex: none; width: 36px; height: 36px; border-radius: 8px; display: grid; place-items: center; font: 750 18px/1 var(--font-data); background: var(--raised); color: var(--muted); }
+.grade-a .grade { background: var(--long); color: var(--bg); }
+.grade-b .grade { background: var(--long-soft); color: var(--long); }
+.levels { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 8px; }
+.lvl { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); min-width: 0; }
+.lvl-label { font-size: 11.5px; color: var(--muted); }
+.lvl-price { font: 650 15px/1.2 var(--font-data); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.lvl-sub { font: 500 11.5px/1.2 var(--font-data); color: var(--muted); }
+.lvl.stop { border-color: var(--short); }
+.lvl.stop .lvl-price { color: var(--short); }
+.lvl.tp .lvl-price { color: var(--long); }
+.checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.checks li { display: grid; grid-template-columns: 16px minmax(120px, auto) 1fr; gap: 8px; align-items: baseline; }
+.checks .mark { font-weight: 700; text-align: center; }
+.checks li.good .mark { color: var(--long); }
+.checks li.bad .mark { color: var(--short); }
+.checks li.neutral .mark { color: var(--muted); }
+.check-label { font-weight: 600; }
+.check-detail { color: var(--muted); }
+.idea .hist { border-top: 1px solid var(--line); padding-top: 8px; }
+@media (max-width: 600px) {
+  #ideas-pairs { width: 100%; }
+  .toolbar .field.inline:has(#ideas-pairs) { flex: 1 1 100%; }
+  .checks li { grid-template-columns: 16px 1fr; }
+  .check-detail { grid-column: 2; }
+}

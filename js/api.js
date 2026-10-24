@@ -291,6 +291,13 @@ export async function getLabData(symbol, interval = '1h') {
   };
 }
 
+/** Latest trade price for a few pairs: Map(symbol → price). */
+export async function getPrices(symbols) {
+  if (await isDemo()) return new Map(demo.market().filter((m) => symbols.includes(m.symbol)).map((m) => [m.symbol, m.price]));
+  const rows = await Promise.all(symbols.map((symbol) => get('/fapi/v1/ticker/price', { symbol }, 4_000).catch(() => null)));
+  return new Map(rows.filter(Boolean).map((r) => [r.symbol, +r.price]));
+}
+
 /** Positioning rows for the last 30 days, paged backwards 500 at a time. */
 async function positioningHistory(path, symbol, period) {
   const from = Date.now() - 30 * 86_400_000 + 60_000;

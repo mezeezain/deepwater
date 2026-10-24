@@ -11,11 +11,13 @@ import { liquidationsView } from './views/liquidations.js';
 import { heatmapView } from './views/heatmap.js';
 import { calculatorView } from './views/calculator.js';
 import { setupsView } from './views/setups.js';
+import { ideasView } from './views/ideas.js';
 
 const ROUTES = {
   whales: { label: 'Whales', view: whalesView },
   pumps: { label: 'Pump catcher', view: pumpsView },
   charts: { label: 'Charts', view: (root, ctx) => tokenView(root, { ...ctx, symbol: store.get('last-pair', 'BTCUSDT') }) },
+  ideas: { label: 'Live setups', view: ideasView },
   setups: { label: 'Setups lab', view: setupsView },
   liqmap: { label: 'Liq map', view: liqmapView },
   liquidations: { label: 'Liquidations', view: liquidationsView },
