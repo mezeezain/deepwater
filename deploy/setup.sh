@@ -147,7 +147,11 @@ if [ "$(cat "$HOME/duckdns/last.log" 2>/dev/null)" = "OK" ]; then
 else
   fail "DuckDNS said '$(cat "$HOME/duckdns/last.log" 2>/dev/null)'. Check the subdomain and token, then run this script again."
 fi
-( crontab -l 2>/dev/null | grep -v duckdns/update.sh; echo "*/5 * * * * $HOME/duckdns/update.sh >/dev/null 2>&1" ) | crontab -
+# A new server has no crontab yet (crontab -l exits 1) and grep -v exits 1 on empty input;
+# neither is an error here, so don't let set -e / pipefail stop the script.
+CRON_LINE="*/5 * * * * $HOME/duckdns/update.sh >/dev/null 2>&1"
+EXISTING=$(crontab -l 2>/dev/null | grep -v duckdns/update.sh || true)
+printf '%s\n%s\n' "$EXISTING" "$CRON_LINE" | sed '/^$/d' | crontab -
 ok "DuckDNS kept up to date every 5 minutes"
 
 # ---------------------------------------------------------------- 8. HTTPS
