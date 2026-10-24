@@ -176,8 +176,8 @@ export function demoHistory(market, now = Date.now()) {
       symbol,
       price,
       t: alertT,
-      rise: 4.5 + r() * 9,
-      impulse: 1.5 + r() * 3,
+      rise: 27 + r() * 3,
+      impulse: r() * 6,
       ctx: { rvol: 2.5 + r() * 5, takerBuy: 0.56 + r() * 0.15, oiChange: 1.5 + r() * 6, whaleLong: 0.55 + r() * 0.3, crowdLong: 0.3 + r() * 0.2 },
       cfg: DEFAULTS,
     });

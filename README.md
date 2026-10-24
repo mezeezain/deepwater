@@ -115,11 +115,11 @@ API: `GET /api/health`, `GET /api/overview` (latest numbers for every pair), `GE
 
 A pair has to pass three gates before it fires:
 
-1. **Lift-off.** Price is 4.5–18% above its rolling 24h low, moved at least 1.5% in the last 5 minutes, and is no more than 20% below its 24h high. The last condition separates a breakout from a bounce after a drop.
+1. **Lift-off.** Price has just crossed **+27% off its rolling 24h low** (1.27× the low; the band is 27–30%, so the 5-second scan fires on the first crossing) and is no more than 20% below its 24h high. The last condition separates a breakout from a bounce after a drop. This matches PumpGlass's trigger: on its published alerts, alert price ÷ start price is 1.2700–1.2734 every time. A minimum 5-minute move can be set in Settings (off by default).
 2. **Order flow.** Volume over the last 5 minutes is at least 2.5× the recent average (average per minute × 5), taker buys are at least 56% of volume, and **real-time** open interest is up at least 1.5% on its level 15 minutes earlier.
 3. **Positioning.** Binance's top 20% of accounts are more than 5 points longer than all accounts, or all accounts are under 40% long. This gate can be switched off.
 
-**Exits and results.** Each signal closes at its stop, after giving back 45% of a gain over 8%, or after 72 hours. The stop is a fixed 5% by default, or optionally a volatility-based stop: 3× the pair's typical 5-minute range, kept within 3–12%. The **exit price is stored**, and the track record reports **realised** results after an assumed 0.15% round-trip cost:
+**Exits and results.** Each signal closes at its stop, after giving back 45% of a gain over 8%, or after 72 hours. The stop is a fixed 7% by default, or optionally a volatility-based stop: 3× the pair's typical 5-minute range, kept within 3–12%. The **exit price is stored**, and the track record reports **realised** results after an assumed 0.15% round-trip cost:
 - win rate, average win and average loss;
 - **expectancy** per signal;
 - how often the stop was hit.

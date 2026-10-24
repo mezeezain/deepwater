@@ -97,7 +97,7 @@ export function pumpsView(root, { go }) {
 
   function explainer() {
     return h('ol.steps',
-      h('li', h('strong', 'Lift-off. '), 'Price is a moderate distance above its 24h low, moved fast in the last 5 minutes, and isn’t far below its 24h high (which would make it a bounce after a drop rather than a breakout).'),
+      h('li', h('strong', 'Lift-off. '), 'Price has just crossed 27% above its rolling 24h low (1.27× the low) and isn’t far below its 24h high (which would make it a bounce after a drop rather than a breakout).'),
       h('li', h('strong', 'Order flow. '), 'Volume is spiking, market buyers outweigh sellers, and real-time open interest is up over 15 minutes, so new positions are opening.'),
       h('li', h('strong', 'Positioning. '), 'Binance’s top 20% of accounts are longer than the crowd, or the crowd is heavily short.'),
       h('li', h('strong', 'Exit. '), 'Each signal closes at its stop, after giving back most of a gain, or after 72 hours. The exit price is stored, and the record shows the realised result after costs.'),

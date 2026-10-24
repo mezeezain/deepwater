@@ -52,7 +52,7 @@ test('replay catches a planted pump and tracks it to an exit', () => {
   const { minutes, pos } = synthPair(3, [2040]);
   const cands = candidates(minutes, pos);
   assert.ok(cands.length > 0, 'pump minutes become candidates');
-  const sigs = replayPair('TESTUSDT', minutes, cands, { ...DEFAULTS, minRise: 3 });
+  const sigs = replayPair('TESTUSDT', minutes, cands, { ...DEFAULTS, minRise: 3, maxRise: 18, minImpulse: 1.5, stopPct: 5 }); // small synthetic pump, so the old small band
   assert.equal(sigs.length, 1, 'one alert, then cooldown');
   const s = sigs[0];
   assert.ok(s.alertT > minutes[2040].t && s.alertT <= minutes[2050].t, 'fires during the climb');

@@ -34,6 +34,10 @@ test('whaleContext: no summary, no context', () => {
   assert.equal(whaleContext({ longShare: null }, 100), null);
 });
 
+// These tests are about whale context, not the trigger, so they use a small lift-off band
+// that the BTC-sized prices below can pass (the default is +27% off the 24h low).
+const SMALL_LIFT = { minRise: 4.5, maxRise: 18, minImpulse: 1.5 };
+
 // A catcher with one pair that passes every gate, to check how whale context changes the outcome.
 function rig({ whaleLookup, requireWhaleBias = false }) {
   const saved = [];
@@ -44,7 +48,7 @@ function rig({ whaleLookup, requireWhaleBias = false }) {
       return { klines: [...quiet, ...burst], oiChange: 3, whaleLong: 0.7, crowdLong: 0.35 };
     },
   };
-  const c = new Catcher({ source, store: { load: () => [], save: (s) => saved.push(s) }, cfg: { requireWhaleBias }, whaleLookup, now: () => 1_000_000 });
+  const c = new Catcher({ source, store: { load: () => [], save: (s) => saved.push(s) }, cfg: { requireWhaleBias, ...SMALL_LIFT }, whaleLookup, now: () => 1_000_000 });
   c.tickers.set('TESTUSDT', { symbol: 'TESTUSDT', price: 80855, low24h: 76000 });
   c.seeded.set('TESTUSDT', 79000); // +2.3% in 5 minutes, +6.4% off the 24h low
   c.candidates.set('TESTUSDT', { symbol: 'TESTUSDT', t: 0, checks: null, pass: false });

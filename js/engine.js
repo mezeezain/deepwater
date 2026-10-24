@@ -2,7 +2,7 @@
 // and the background worker (worker/catcher.mjs) share exactly the same rules.
 //
 // A signal goes through three gates:
-//   1. Screen  – price has lifted a moderate amount off its rolling 24h low, moved fast in the last 5 minutes,
+//   1. Screen  – price has just crossed +27% off its rolling 24h low (1.27× the low)
 //                and isn't just bouncing far below its 24h high.
 //   2. Confirm – order flow backs the move: volume spike, taker buying (positive CVD), open interest growing.
 //   3. Edge    – positioning: top accounts longer than the crowd, or a heavily short crowd.
@@ -10,16 +10,16 @@
 // so results can be reported as realised returns after costs, not only as the best price reached.
 
 export const DEFAULTS = {
-  minRise: 4.5, // % above the 24h low, lower bound
-  maxRise: 18, // % above the 24h low, upper bound: past this the move is usually spent
-  minImpulse: 1.5, // % price change over the last 5 minutes
+  minRise: 27, // % above the 24h low: fire once price is 1.27× its rolling 24h low (PumpGlass's trigger)
+  maxRise: 30, // % above the 24h low, upper bound: with a 5-second scan this catches the first crossing of +27%
+  minImpulse: 0, // % change over the last 5 minutes (0 = no impulse requirement)
   minRvol: 2.5, // last 5m volume ÷ average 5m volume over the previous 30 minutes
   minTakerBuy: 0.56, // taker buy share of volume, last 5 minutes (0.5 = balanced)
   minOiChange: 1.5, // % open interest change over 15 minutes
   requireEdge: true,
   minGap: 5, // whale long % minus crowd long %, in points
   squeezeCrowdLong: 0.4, // crowd long share below this counts as squeeze fuel
-  stopPct: 5, // close when price falls this % below the alert price
+  stopPct: 7, // close when price falls this % below the alert price
   trailFrom: 8, // trailing close only arms once the rise reaches this %
   trailGiveBack: 0.45, // close after giving back this share of the best rise
   maxTrackHours: 72,

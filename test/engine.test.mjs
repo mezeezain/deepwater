@@ -5,12 +5,14 @@ import { DEFAULTS, screen, orderFlow, confirm, createSignal, updateSignal, repla
 
 const round1 = (x) => Math.round(x * 10) / 10;
 
-test('screen: needs a moderate rise off the 24h low and a fresh 5m impulse', () => {
-  assert.equal(screen({ price: 1.06, low24h: 1 }, 1.03).pass, true);
-  assert.equal(screen({ price: 1.06, low24h: 1 }, 1.059).pass, false, 'no impulse');
-  assert.equal(screen({ price: 1.02, low24h: 1 }, 0.98).pass, false, 'too close to the low');
-  assert.equal(screen({ price: 1.3, low24h: 1 }, 1.2).pass, false, 'move already spent');
-  assert.equal(screen({ price: 1.06, low24h: 0 }, 1).pass, false, 'bad data');
+test('screen: fires on the first crossing of +27% off the 24h low', () => {
+  assert.equal(screen({ price: 1.27, low24h: 1 }, 1.26).pass, true);
+  assert.equal(screen({ price: 1.2734, low24h: 1 }, 1.27).pass, true, 'one 5-second tick past the line');
+  assert.equal(screen({ price: 1.269, low24h: 1 }, 1.2).pass, false, 'not yet +27%');
+  assert.equal(screen({ price: 1.35, low24h: 1 }, 1.3).pass, false, 'crossed long ago');
+  assert.equal(screen({ price: 1.28, low24h: 0 }, 1).pass, false, 'bad data');
+  // The optional impulse setting still works when switched on.
+  assert.equal(screen({ price: 1.28, low24h: 1 }, 1.279, { ...DEFAULTS, minImpulse: 1.5 }).pass, false, 'no impulse');
 });
 
 test('orderFlow: relative volume and taker buy share from 1m klines', () => {
@@ -71,9 +73,9 @@ test('tracking: a drawdown after the peak does not change dip before peak', () =
 
 test('tracking: closes on a stop below the alert price', () => {
   const s = createSignal({ symbol: 'X', price: 100, t: 0 });
-  updateSignal(s, 97, 1000);
+  updateSignal(s, 94, 1000);
   assert.equal(s.status, 'TRACKING');
-  updateSignal(s, 94.9, 2000);
+  updateSignal(s, 92.9, 2000);
   assert.equal(s.status, 'CLOSED');
   assert.equal(s.rise, 0);
 });
@@ -147,8 +149,8 @@ test('realised: older signals without exitPrice use the last tracked price', () 
 
 test('updateSignal: stores the exit price when it closes', () => {
   const s = createSignal({ symbol: 'X', price: 100, t: 0 });
-  updateSignal(s, 94.5, 1000);
-  assert.equal(s.exitPrice, 94.5);
+  updateSignal(s, 92.5, 1000);
+  assert.equal(s.exitPrice, 92.5);
   assert.equal(s.closeReason, 'Hit the stop');
 });
 
@@ -169,21 +171,21 @@ test('orderFlow: typical 5-minute range for the volatility stop', () => {
 });
 
 test('screen: a bounce far below the 24h high is not a breakout', () => {
-  // Crashed from 100 to 70, bounced 6% to 74.2: 25.8% below the high.
-  assert.equal(screen({ price: 74.2, low24h: 70, high24h: 100 }, 72).pass, false);
+  // Crashed from 200 to 70, bounced 27% to 89: 55.5% below the high.
+  assert.equal(screen({ price: 89, low24h: 70, high24h: 200 }, 85).pass, false);
   // Same lift off the low near the top of the range: passes.
-  assert.equal(screen({ price: 74.2, low24h: 70, high24h: 76 }, 72).pass, true);
-  assert.equal(screen({ price: 74.2, low24h: 70, high24h: 100 }, 72, { ...DEFAULTS, maxBelowHigh: 30 }).pass, true);
+  assert.equal(screen({ price: 89, low24h: 70, high24h: 95 }, 85).pass, true);
+  assert.equal(screen({ price: 89, low24h: 70, high24h: 200 }, 85, { ...DEFAULTS, maxBelowHigh: 60 }).pass, true);
 });
 
 test('signals keep the rules they fired with', () => {
-  const cfg = { ...DEFAULTS, stopPct: 7 };
+  const cfg = { ...DEFAULTS, stopPct: 10 };
   const s = createSignal({ symbol: 'X', price: 100, t: 0, cfg });
   assert.equal(s.cfgId, configId(cfg));
   assert.notEqual(s.cfgId, configId(DEFAULTS));
-  assert.equal(s.stopPct, 7);
-  updateSignal(s, 94, 1000, DEFAULTS); // a 5% default stop would close this; the signal's own 7% does not
+  assert.equal(s.stopPct, 10);
+  updateSignal(s, 92, 1000, DEFAULTS); // the 7% default stop would close this; the signal's own 10% does not
   assert.equal(s.status, 'TRACKING');
-  updateSignal(s, 92.9, 2000, DEFAULTS);
+  updateSignal(s, 89.9, 2000, DEFAULTS);
   assert.equal(s.status, 'CLOSED');
 });

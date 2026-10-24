@@ -111,10 +111,10 @@ export function periodStats(signals, from, to, costPct) {
 /** Default search grid: a few values for the settings that matter most. */
 export function defaultGrid(base = DEFAULTS) {
   const grid = [];
-  for (const minRise of [3, 4.5, 6])
+  for (const minRise of [24, 27, 30])
     for (const minRvol of [2, 2.5, 3.5])
       for (const minTakerBuy of [0.53, 0.56, 0.6])
-        for (const stopMode of ['fixed', 'vol']) grid.push({ ...base, minRise, minRvol, minTakerBuy, stopMode });
+        for (const stopMode of ['fixed', 'vol']) grid.push({ ...base, minRise, maxRise: minRise + 3, minRvol, minTakerBuy, stopMode });
   return grid;
 }
 
@@ -140,7 +140,7 @@ export function runBacktest(data, { trainDays = 20, costPct = DEFAULTS.costPct, 
   const best = (eligible.length ? eligible : results).slice().sort((a, b) => (b.train.expectancy ?? -Infinity) - (a.train.expectancy ?? -Infinity))[0];
   const defaults = evaluate({ ...DEFAULTS });
   const days = (end - start) / (DAY * MIN);
-  const pick = (cfg) => Object.fromEntries(['minRise', 'minRvol', 'minTakerBuy', 'stopMode', 'stopPct', 'maxBelowHigh', 'minOiChange'].map((k) => [k, cfg[k]]));
+  const pick = (cfg) => Object.fromEntries(['minRise', 'maxRise', 'minRvol', 'minTakerBuy', 'stopMode', 'stopPct', 'maxBelowHigh', 'minOiChange'].map((k) => [k, cfg[k]]));
   return {
     ranAt: Date.now(),
     pairs: data.length,
