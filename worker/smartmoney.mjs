@@ -12,7 +12,10 @@
 //   TOP=120             how many pairs to poll, by 24h volume (all pairs: TOP=1000)
 //   RATE_MS=1200        delay between Binance website requests (keep this polite)
 //   KEEP_HOURS=720      snapshot history kept per pair (Binance updates slowly, so keep weeks)
-//   ALLOW_ORIGIN=*      CORS origin allowed to read the API, e.g. https://you.github.io
+//   HOST=127.0.0.1      address to listen on (use 0.0.0.0 only without a reverse proxy)
+//   ALLOW_ORIGIN=...    comma-separated origins allowed to read the API (default: the Deepwater site and localhost:8000; * = anyone)
+//   RATE_LIMIT=120      requests per minute per client
+//   POSITIONING_TOP=60  pairs whose ratio series are cached for /api/positioning (0 = off)
 //   DATA_DIR=worker/data
 //   SMART_MONEY_URL     override the overview endpoint if Binance moves it
 //   FAPI_URL            override the futures API base (for testing)
@@ -22,6 +25,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseOverview, pickCohort, summarize } from '../js/smartmoney.js';
 import { demoSnapshots } from '../js/smartmoney-demo.js';
+import { guardedHandler, parseOrigins } from './http-util.mjs';
 
 const OVERVIEW_URL = process.env.SMART_MONEY_URL || 'https://www.binance.com/bapi/futures/v1/public/future/smart-money/signal/overview';
 const FAPI = process.env.FAPI_URL || 'https://fapi.binance.com';
@@ -29,7 +33,11 @@ const PORT = +(process.env.PORT || 8787);
 const TOP = +(process.env.TOP || 120);
 const RATE_MS = Math.max(500, +(process.env.RATE_MS || 1200));
 const KEEP_MS = +(process.env.KEEP_HOURS || 720) * 3_600_000;
-const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN || '*';
+const ORIGINS = parseOrigins(process.env.ALLOW_ORIGIN);
+const HOST = process.env.HOST || '127.0.0.1';
+const RATE_LIMIT = +(process.env.RATE_LIMIT || 120);
+const POS_TOP = +(process.env.POSITIONING_TOP ?? 60);
+const POS_EVERY_MS = +(process.env.POSITIONING_EVERY_MS || 600_000);
 const DATA_DIR = process.env.DATA_DIR || fileURLToPath(new URL('./data', import.meta.url));
 const HEADERS = { accept: 'application/json', 'user-agent': 'Mozilla/5.0 (compatible; deepwater-whale-worker)' };
 
@@ -191,6 +199,44 @@ async function loop() {
   }
 }
 
+// Cached copy of the four ratio series per pair, so every browser makes one request instead of 240 to Binance.
+let positioning = { t: 0, rows: [] };
+
+async function refreshPositioning() {
+  const list = (await universe()).slice(0, POS_TOP);
+  const rows = [];
+  const series = (rs) => rs.map((r) => ({ t: +r.timestamp, long: +r.longAccount }));
+  for (const { symbol } of list) {
+    try {
+      const params = { symbol, period: '1h', limit: 25 };
+      const [whales, smart, crowd, oi] = await Promise.all([
+        fapi('/futures/data/topLongShortPositionRatio', params),
+        fapi('/futures/data/topLongShortAccountRatio', params),
+        fapi('/futures/data/globalLongShortAccountRatio', params),
+        fapi('/futures/data/openInterestHist', params),
+      ]);
+      rows.push({ symbol, whales: series(whales), smart: series(smart), crowd: series(crowd), oi: oi.map((r) => ({ t: +r.timestamp, value: +r.sumOpenInterestValue })) });
+    } catch (e) {
+      log('positioning', symbol, e.message);
+      if (/HTTP (418|429)/.test(e.message)) await sleep(60_000);
+    }
+    await sleep(1500); // the futures/data endpoints allow 1000 requests per 5 minutes per IP
+  }
+  if (rows.length) positioning = { t: Date.now(), period: '1h', rows };
+  log(`Positioning cache: ${rows.length} of ${list.length} pairs`);
+}
+
+async function positioningLoop() {
+  for (;;) {
+    try {
+      await refreshPositioning();
+    } catch (e) {
+      log('Positioning refresh failed:', e.message);
+    }
+    await sleep(POS_EVERY_MS);
+  }
+}
+
 // Demo: simulated pairs, refreshed every minute.
 function demoLoop() {
   const pairs = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'SUIUSDT', 'WIFUSDT', 'PEPEUSDT'];
@@ -225,41 +271,47 @@ function binanceAges() {
   return { newestUpdate: Math.max(...ts), oldestUpdate: Math.min(...ts) };
 }
 
-const server = http.createServer((req, res) => {
-  const url = new URL(req.url, 'http://x');
-  const send = (code, body) => {
-    res.writeHead(code, { 'content-type': 'application/json', 'access-control-allow-origin': ALLOW_ORIGIN, 'cache-control': 'no-store' });
-    res.end(JSON.stringify(body));
-  };
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, { 'access-control-allow-origin': ALLOW_ORIGIN, 'access-control-allow-methods': 'GET', 'access-control-max-age': '86400' });
-    return res.end();
-  }
-  if (url.pathname === '/api/health') {
-    return send(200, { ok: true, demo, ...status, ...binanceAges(), blockedUntil: blockedUntil > Date.now() ? blockedUntil : null, pairsWithData: history.size, keepHours: KEEP_MS / 3_600_000 });
-  }
-  if (url.pathname === '/api/overview') {
-    const rows = [];
-    for (const [symbol, list] of history) if (list.length) rows.push(latestRow(symbol, list));
-    return send(200, { t: Date.now(), rows });
-  }
-  const m = url.pathname.match(/^\/api\/symbol\/([A-Z0-9]+)$/);
-  if (m) {
-    const since = +(url.searchParams.get('since') || 0);
-    const rows = (history.get(m[1]) || []).filter((s) => s.t >= since);
-    const now = latest.get(m[1]);
-    return send(rows.length ? 200 : 404, { symbol: m[1], snapshots: rows, mark: now?.mark ?? null, oiUsd: now?.oiUsd ?? null, checkedAt: now?.checkedAt ?? null });
-  }
-  send(404, { error: 'Not found. Try /api/health, /api/overview or /api/symbol/BTCUSDT' });
-});
+const server = http.createServer(guardedHandler({
+  origins: ORIGINS,
+  perMinute: RATE_LIMIT,
+  trustProxy: HOST === '127.0.0.1' || HOST === '::1' || HOST === 'localhost', // behind our own reverse proxy
+  handler(req, res, { url, send, direct }) {
+    if (url.pathname === '/api/health') {
+      // Public health is deliberately thin. Detail (errors, counters) is only for requests made directly on the machine.
+      const pub = { ok: true, demo, pairsWithData: history.size, keepHours: KEEP_MS / 3_600_000, ...binanceAges() };
+      if (direct && url.searchParams.has('detail')) Object.assign(pub, status, { blockedUntil: blockedUntil > Date.now() ? blockedUntil : null });
+      return send(200, pub);
+    }
+    if (url.pathname === '/api/overview') {
+      const rows = [];
+      for (const [symbol, list] of history) if (list.length) rows.push(latestRow(symbol, list));
+      return send(200, { t: Date.now(), rows });
+    }
+    if (url.pathname === '/api/positioning') {
+      if (!positioning.rows.length) return send(404, { error: 'Positioning cache is still filling' });
+      return send(200, { t: positioning.t, period: positioning.period, rows: positioning.rows });
+    }
+    const m = url.pathname.match(/^\/api\/symbol\/([A-Z0-9]{1,30})$/);
+    if (m) {
+      const since = Math.max(0, +(url.searchParams.get('since') || 0)) || 0;
+      const rows = (history.get(m[1]) || []).filter((s) => s.t >= since);
+      const now = latest.get(m[1]);
+      return send(rows.length ? 200 : 404, { symbol: m[1], snapshots: rows, mark: now?.mark ?? null, oiUsd: now?.oiUsd ?? null, checkedAt: now?.checkedAt ?? null });
+    }
+    send(404, { error: 'Not found. Try /api/health, /api/overview, /api/positioning or /api/symbol/BTCUSDT' });
+  },
+}));
 
-server.listen(PORT, () => {
-  log(`Whale data server on http://localhost:${PORT} (${demo ? 'demo data' : `polling top ${TOP} pairs, one request every ${RATE_MS}ms`})`);
-  log(`In the web app: Whales page → Whale data → paste http://<this server>:${PORT}`);
+server.listen(PORT, HOST, () => {
+  log(`Whale data server on http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT} (${demo ? 'demo data' : `polling top ${TOP} pairs, one request every ${RATE_MS}ms`}), CORS: ${ORIGINS.join(', ')}`);
+  log(`In the web app: Whales page → Whale data → paste the server's https address`);
 });
 
 if (demo) demoLoop();
-else loop();
+else {
+  loop();
+  if (POS_TOP > 0) positioningLoop();
+}
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {

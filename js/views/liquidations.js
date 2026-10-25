@@ -1,6 +1,6 @@
 // Live forced liquidations from Binance's public stream, aggregated by pair and side.
 import { streamLiquidations } from '../api.js';
-import { h, ticker, fmtPrice, fmtUsd } from '../util.js';
+import { h, ticker, fmtPrice, fmtUsd, fill, visibleInterval } from '../util.js';
 
 const WINDOW_MS = 15 * 60_000;
 
@@ -12,7 +12,7 @@ export function liquidationsView(root, { go }) {
   const map = h('div.liq-map');
   const feed = h('ol.feed');
 
-  root.replaceChildren(
+  fill(root, 
     h('section.hero.compact',
       h('div.hero-text',
         h('p.eyebrow', 'Live sample · last 15 minutes'),
@@ -48,7 +48,7 @@ export function liquidationsView(root, { go }) {
     }
     const list = [...by.values()].sort((a, b) => b.long + b.short - (a.long + a.short)).slice(0, 24);
     const max = list[0] ? list[0].long + list[0].short : 1;
-    map.replaceChildren(...(list.length ? list.map((r) => {
+    fill(map, ...(list.length ? list.map((r) => {
       const tot = r.long + r.short;
       return h('button.liq-tile', {
         style: { '--size': Math.sqrt(tot / max), '--longshare': r.long / tot },
@@ -60,7 +60,7 @@ export function liquidationsView(root, { go }) {
     const L = events.reduce((s, e) => s + (e.side === 'long' ? e.usd : 0), 0);
     const S = events.reduce((s, e) => s + (e.side === 'short' ? e.usd : 0), 0);
     const biggest = events.reduce((b, e) => (!b || e.usd > b.usd ? e : b), null);
-    totals.replaceChildren(
+    fill(totals, 
       h('div.stat', h('span.stat-label', 'Longs liquidated'), h('span.stat-value.down', fmtUsd(L))),
       h('div.stat', h('span.stat-label', 'Shorts liquidated'), h('span.stat-value.up', fmtUsd(S))),
       h('div.stat', h('span.stat-label', 'Biggest single'), h('span.stat-value', biggest ? fmtUsd(biggest.usd) : '–'), h('span.stat-sub', biggest ? `${ticker(biggest.symbol)} ${biggest.side}` : '')),
@@ -69,7 +69,7 @@ export function liquidationsView(root, { go }) {
 
   function renderFeed() {
     const list = events.filter((e) => e.usd >= minUsd).slice(-40).reverse();
-    feed.replaceChildren(...(list.length ? list.map(item) : [h('li.empty', 'No liquidations above this size yet.')]));
+    fill(feed, ...(list.length ? list.map(item) : [h('li.empty', 'No liquidations above this size yet.')]));
   }
 
   const item = (e) => h(`li.${e.side}`,
@@ -92,7 +92,7 @@ export function liquidationsView(root, { go }) {
   });
   renderMap();
   renderFeed();
-  const timer = setInterval(renderMap, 5000);
+  const timer = visibleInterval(renderMap, 5000);
   return () => {
     stop();
     clearInterval(timer);

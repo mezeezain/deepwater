@@ -1,7 +1,8 @@
 // Whales vs crowd: who is long when everyone else is short, across the most traded pairs.
-import { getMarket, getPositioning, getSmartOverview, whaleServer, testWhaleServer, isDemo, DEFAULT_WHALE_SERVER } from '../api.js';
+import { getMarket, getPositioningMap, getSmartOverview, whaleServer, testWhaleServer, isDemo, DEFAULT_WHALE_SERVER } from '../api.js';
 import { sparkline } from '../chart.js';
-import { h, ticker, fmtPrice, fmtPct, fmtUsd, fmtShare, signClass, shareBar, sortRows, csv, copyText, toast, watchlist, store } from '../util.js';
+import { normalizePair } from '../route.js';
+import { h, ticker, pairLink, fmtPrice, fmtPct, fmtUsd, fmtShare, signClass, shareBar, sortRows, csv, copyText, toast, watchlist, store, fill } from '../util.js';
 
 const SCAN_LIMIT = 60; // pairs by volume; 4 requests each, well inside Binance's public limits
 
@@ -54,9 +55,11 @@ export function whalesView(root, { go }) {
   let loaded = 0;
   let total = 0;
   let alive = true;
+  let loadedOnce = false;
+  let loading = false;
 
   const summary = h('div.summary');
-  const lensBar = h('div.lenses', { role: 'tablist', 'aria-label': 'Ranking' });
+  const lensBar = h('div.lenses', { role: 'group', 'aria-label': 'Ranking' });
   const search = h('input#whale-search.search', {
     type: 'search',
     placeholder: 'Filter pairs, e.g. SOL',
@@ -66,7 +69,7 @@ export function whalesView(root, { go }) {
       render();
     },
     onkeydown: (e) => {
-      if (e.key === 'Enter' && query) go('token', (query.endsWith('USDT') ? query : query + 'USDT'));
+      if (e.key === 'Enter' && normalizePair(query)) go('token', normalizePair(query));
     },
   });
   const progress = h('div.progress', h('span'));
@@ -84,7 +87,7 @@ export function whalesView(root, { go }) {
     renderSourcePanel();
   } }, 'Whale data');
 
-  root.replaceChildren(
+  fill(root, 
     h('section.hero',
       h('div.hero-text',
         h('p.eyebrow', 'Binance USDⓈ-M perpetuals · Smart Money whales vs all accounts'),
@@ -105,11 +108,11 @@ export function whalesView(root, { go }) {
   );
 
   function renderLenses() {
-    lensBar.replaceChildren(
+    fill(lensBar, 
       ...LENSES.map((l) =>
         h('button.lens', {
-          role: 'tab',
-          'aria-selected': String(l.id === lens && !sort),
+          type: 'button',
+          'aria-pressed': String(l.id === lens && !sort),
           title: l.hint || '',
           onclick: () => {
             lens = l.id;
@@ -170,11 +173,11 @@ export function whalesView(root, { go }) {
       )),
       h('tbody', visible.length ? visible.map(rowEl) : h('tr', h('td.empty', { colSpan: 13 }, emptyText()))),
     );
-    tableWrap.replaceChildren(table);
+    fill(tableWrap, loadedOnce ? table : h('div.skeleton', { role: 'status', 'aria-label': 'Loading positioning data' }, Array.from({ length: 10 }, () => h('i'))));
   }
 
   function emptyText() {
-    if (loaded < total) return 'Loading positioning data…';
+    if (loaded < total || !loadedOnce) return 'Loading positioning data…';
     if (lens === 'watch') return 'Your watchlist is empty. Star a pair to add it.';
     if (lens === 'contra') return 'No contrarian setups right now. Try another ranking.';
     return 'No pairs match that filter.';
@@ -183,7 +186,7 @@ export function whalesView(root, { go }) {
   function rowEl(r) {
     const starred = watchlist.has(r.symbol);
     const sig = r.signal && SIGNAL_TEXT[r.signal];
-    return h('tr', { tabIndex: 0, onclick: () => go('token', r.symbol), onkeydown: (e) => e.key === 'Enter' && go('token', r.symbol) },
+    return h('tr', { onclick: () => go('token', r.symbol) },
       h('td', h('button.star', {
         'aria-label': starred ? `Remove ${ticker(r.symbol)} from watchlist` : `Add ${ticker(r.symbol)} to watchlist`,
         'aria-pressed': String(starred),
@@ -193,7 +196,7 @@ export function whalesView(root, { go }) {
           render();
         },
       }, starred ? '★' : '☆')),
-      h('th.pair', { scope: 'row' }, h('span.pair-name', ticker(r.symbol)),
+      h('th.pair', { scope: 'row' }, pairLink(r.symbol),
         r.cohort === 'smart' && h('span.chip.aligned', { title: 'Fewer than 10 whales on this pair: all smart-money traders shown instead' }, 'S'),
         !r.exact && h('span.chip.aligned', { title: 'No Smart Money data for this pair: Binance’s top 20% of accounts by margin balance, a much broader group than whales' }, 'T20'),
         sig && h(`span.chip.${r.signal}`, { title: sig[1] }, sig[0])),
@@ -213,14 +216,14 @@ export function whalesView(root, { go }) {
 
   function renderSummary() {
     if (!rows.length) {
-      summary.replaceChildren(h('div.stat', h('span.stat-label', 'Scanning'), h('span.stat-value', '…')));
+      fill(summary, h('div.stat', h('span.stat-label', 'Scanning'), h('span.stat-value', '…')));
       return;
     }
     const avg = (f) => rows.reduce((s, r) => s + f(r), 0) / rows.length;
     const whale = avg((r) => r.whaleLong);
     const crowd = avg((r) => r.crowdLong);
     const contra = rows.filter((r) => r.signal === 'contrarian').length;
-    summary.replaceChildren(
+    fill(summary, 
       h('div.stat', h('span.stat-label', 'Whales long, average'), h('span.stat-value', fmtShare(whale)), shareBar(whale, 'Whales')),
       h('div.stat', h('span.stat-label', 'Crowd long, average'), h('span.stat-value', fmtShare(crowd)), shareBar(crowd, 'Crowd')),
       h('div.stat', h('span.stat-label', 'Contrarian setups'), h('span.stat-value', contra), h('span.stat-sub', `of ${rows.length} pairs scanned`)),
@@ -255,7 +258,7 @@ export function whalesView(root, { go }) {
       if (!url) {
         whaleServer.set('');
         result.textContent = 'Disconnected. Using the top-trader ratio.';
-        load();
+        refresh();
         return;
       }
       result.textContent = 'Checking…';
@@ -263,19 +266,19 @@ export function whalesView(root, { go }) {
         const health = await testWhaleServer(url);
         whaleServer.set(url);
         result.textContent = `Connected: ${health.pairsWithData} pairs with data${health.demo ? ' (server is in demo mode)' : ''}.`;
-        load();
+        refresh();
       } catch (e) {
         result.textContent = e.message;
       }
     };
-    sourcePanel.replaceChildren(
+    fill(sourcePanel, 
       h('p.note', 'Exact whale positions (headcount, position value, average entry, unrealized PnL) come from Binance’s Smart Money data, which only a server can fetch. Run worker/smartmoney.mjs from this project on a server and paste its address here. See the README.'),
       demoMode && h('p.note', 'Demo mode uses simulated exact data, so this setting has no effect until you switch to live data.'),
       h('form.controls', { onsubmit: (e) => { e.preventDefault(); connect(); } },
         h('label.field', h('span', 'Whale data server'), input),
         h('button.btn', { type: 'submit' }, 'Connect'),
         whaleServer.get() && h('button.btn.ghost', { type: 'button', onclick: () => { input.value = ''; connect(); } }, 'Disconnect'),
-        whaleServer.get() !== DEFAULT_WHALE_SERVER && h('button.btn.ghost', { type: 'button', onclick: () => { whaleServer.reset(); input.value = DEFAULT_WHALE_SERVER; result.textContent = 'Using the default server.'; load(); } }, 'Use default server'),
+        whaleServer.get() !== DEFAULT_WHALE_SERVER && h('button.btn.ghost', { type: 'button', onclick: () => { whaleServer.reset(); input.value = DEFAULT_WHALE_SERVER; result.textContent = 'Using the default server.'; refresh(); } }, 'Use default server'),
       ),
       result,
     );
@@ -283,6 +286,7 @@ export function whalesView(root, { go }) {
 
   async function load() {
     const market = await getMarket();
+    if (!alive) return;
     const top = market.slice(0, SCAN_LIMIT);
     // Always include starred pairs, even if they are outside the top by volume.
     for (const s of watchlist.all()) {
@@ -299,61 +303,68 @@ export function whalesView(root, { go }) {
       smartError = e.message;
     }
     renderSourceLine();
-    const byBatch = [];
-    await Promise.all(
-      top.map(async (m) => {
-        try {
-          const p = await getPositioning(m.symbol);
-          if (!p.whales.length || !p.crowd.length) return;
-          const now = p.whales.at(-1).long;
-          const then = p.whales[0].long;
-          const crowdLong = p.crowd.at(-1).long;
-          const oiNow = p.oi.at(-1)?.value;
-          const oiThen = p.oi[0]?.value;
-          // Exact whale numbers when the whale data server has this pair; Binance's top-trader ratio otherwise.
-          const sm = smart?.rows.get(m.symbol)?.shown;
-          const exact = sm && sm.longShare != null;
-          const whaleLong = exact ? sm.longShare : now;
-          // Crowd stays Binance's all-accounts ratio: whales are a small slice of open interest, so
-          // "open interest minus whales" sits near 50% on every pair and hides the real disagreement.
-          const crowd = crowdLong;
-          const r = {
-            ...m,
-            whaleLong,
-            crowdLong: crowd,
-            exact,
-            cohort: exact ? sm.cohort : null,
-            whaleNet: exact ? sm.net : null,
-            whaleUpnl: exact ? (sm.longUpnl ?? 0) + (sm.shortUpnl ?? 0) : null,
-            whaleCount: exact ? (sm.longCount ?? 0) + (sm.shortCount ?? 0) : null,
-            smartLong: p.smart.at(-1)?.long ?? null,
-            gap: Math.abs(whaleLong - crowd) * 100,
-            shift24h: (now - then) * 100,
-            oiChange: oiThen ? ((oiNow - oiThen) / oiThen) * 100 : null,
-            trend: p.whales.map((x) => x.long),
-          };
-          r.signal = classify(r);
-          byBatch.push(r);
-        } catch {
-          // A pair without positioning data (new listing) is skipped.
-        } finally {
-          loaded++;
-          progress.firstChild.style.width = `${(loaded / total) * 100}%`;
-          progress.hidden = loaded >= total;
-          if (loaded % 8 === 0 || loaded === total) {
-            rows = [...byBatch];
-            render();
-          }
-        }
-      }),
-    );
+    const positioning = await getPositioningMap(top.map((m) => m.symbol), (done) => {
+      loaded = done;
+      progress.firstChild.style.width = `${(loaded / total) * 100}%`;
+      progress.hidden = loaded >= total;
+    });
+    if (!alive) return;
+    const built = [];
+    for (const m of top) {
+      const p = positioning.get(m.symbol);
+      if (!p || !p.whales.length || !p.crowd.length) continue;
+      const now = p.whales.at(-1).long;
+      const then = p.whales[0].long;
+      const crowdLong = p.crowd.at(-1).long;
+      const oiNow = p.oi.at(-1)?.value;
+      const oiThen = p.oi[0]?.value;
+      // Exact whale numbers when the whale data server has this pair; Binance's top-trader ratio otherwise.
+      const sm = smart?.rows.get(m.symbol)?.shown;
+      const exact = sm && sm.longShare != null;
+      const whaleLong = exact ? sm.longShare : now;
+      // Crowd stays Binance's all-accounts ratio: whales are a small slice of open interest, so
+      // "open interest minus whales" sits near 50% on every pair and hides the real disagreement.
+      const r = {
+        ...m,
+        whaleLong,
+        crowdLong,
+        exact,
+        cohort: exact ? sm.cohort : null,
+        whaleNet: exact ? sm.net : null,
+        whaleUpnl: exact ? (sm.longUpnl ?? 0) + (sm.shortUpnl ?? 0) : null,
+        whaleCount: exact ? (sm.longCount ?? 0) + (sm.shortCount ?? 0) : null,
+        smartLong: p.smart.at(-1)?.long ?? null,
+        gap: Math.abs(whaleLong - crowdLong) * 100,
+        shift24h: (now - then) * 100,
+        oiChange: oiThen ? ((oiNow - oiThen) / oiThen) * 100 : null,
+        trend: p.whales.map((x) => x.long),
+      };
+      r.signal = classify(r);
+      built.push(r);
+    }
+    rows = built; // one render for the whole batch, not one per eight pairs
+    loadedOnce = true;
+    loaded = total;
+    progress.hidden = true;
+    render();
+  }
+
+  async function refresh() {
+    if (loading) return; // never overlap two scans
+    loading = true;
+    try {
+      await load();
+    } finally {
+      loading = false;
+    }
   }
 
   render();
-  load().catch((err) => {
-    tableWrap.replaceChildren(h('p.error', `Couldn't load market data. ${err.message}`));
+  refresh().catch((err) => {
+    fill(tableWrap, h('p.error', `Couldn't load market data. ${err.message}`));
   });
-  const timer = setInterval(() => load().catch(() => {}), 5 * 60_000);
+  // Re-scan every 5 minutes, but not while the tab is hidden.
+  const timer = setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 5 * 60_000);
   return () => {
     alive = false;
     clearInterval(timer);

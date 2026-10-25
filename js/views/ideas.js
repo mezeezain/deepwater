@@ -3,7 +3,7 @@ import { getLabData, getSmartOverview, getPrices, isDemo, CHART_INTERVALS } from
 import { MODELS, LAB_DEFAULTS, runLab } from '../setups.js';
 import { activeIdeas, evidence, comparable, watchLevels, priceCheck, HIGHER } from '../ideas.js';
 import { beep } from '../catcher-app.js';
-import { h, ticker, fmtPrice, fmtPct, signClass, toast, store } from '../util.js';
+import { h, ticker, fmtPrice, fmtPct, signClass, toast, store, fill, visibleInterval, riskNote, copyText } from '../util.js';
 
 const FRAMES = ['15m', '1h', '4h'];
 const STATE_LABEL = {
@@ -36,11 +36,12 @@ export function ideasView(root, { go }) {
   const statusLine = h('p.note', 'Loading BTC, ETH and SOL on three timeframes…');
   const ideasBox = h('div.ideas');
   const watchBox = h('div.table-wrap');
-  const filterBtns = h('div.lenses', { role: 'tablist', 'aria-label': 'Which setups' });
+  const filterBtns = h('div.lenses', { role: 'group', 'aria-label': 'Which setups' });
   const notifyBtn = h('button.btn.ghost', { type: 'button', onclick: toggleNotify });
   const pairsInput = h('input#ideas-pairs', { value: pairs, 'aria-label': 'Pairs, comma separated', spellcheck: false, autocomplete: 'off' });
 
-  root.replaceChildren(
+  fill(root, 
+    riskNote('Setups are mechanical plans with no guarantee; size positions so the stop is a loss you can accept. '),
     h('section.hero.compact',
       h('div.hero-text',
         h('p.eyebrow', '15m · 1h · 4h · refreshed at every candle close'),
@@ -70,8 +71,8 @@ export function ideasView(root, { go }) {
   );
 
   function paintControls() {
-    filterBtns.replaceChildren(
-      ...[['strong', 'Grade A and B'], ['all', 'All setups']].map(([id, label]) => h('button.lens', { type: 'button', role: 'tab', 'aria-selected': String(filter === id), onclick: () => { filter = id; store.set('ideas-filter', id); paintControls(); render(); } }, label)),
+    fill(filterBtns, 
+      ...[['strong', 'Grade A and B'], ['all', 'All setups']].map(([id, label]) => h('button.lens', { type: 'button', 'aria-pressed': String(filter === id), onclick: () => { filter = id; store.set('ideas-filter', id); paintControls(); render(); } }, label)),
     );
     notifyBtn.textContent = notifyOn ? 'Alerts on' : 'Alert me';
     notifyBtn.setAttribute('aria-pressed', String(notifyOn));
@@ -225,7 +226,7 @@ export function ideasView(root, { go }) {
       (loading.size ? ` · loading ${[...loading].join(', ')}…` : '') +
       (errors.length ? ` · failed: ${errors.join('; ')}` : '');
 
-    ideasBox.replaceChildren(...(shown.length
+    fill(ideasBox, ...(shown.length
       ? shown.map(card)
       : [h('section.panel', h('p.note', ideas.length
         ? `No valid grade A or B setup right now; ${hidden} other${hidden === 1 ? ' is' : 's are'} hidden. Switch to “All setups” to see ${hidden === 1 ? 'it' : 'them'}.`
@@ -250,7 +251,7 @@ export function ideasView(root, { go }) {
         ));
       }
     }
-    watchBox.replaceChildren(h('table.grid',
+    fill(watchBox, h('table.grid',
       h('thead', h('tr', ...['Pair', 'Price', 'Sweep long below', 'Sweep short above', 'Regime', 'Flips at'].map((x) => h('th', { scope: 'col' }, x)))),
       h('tbody', rows),
     ));
@@ -283,7 +284,12 @@ export function ideasView(root, { go }) {
           h('h2', ticker(x.symbol), ' ', h(`span.badge.${long ? 'up' : 'down'}`, long ? 'Long' : 'Short'), h('span.sub', ` ${x.tf} · ${m.name}`)),
           h('p.note', stateText, ' · signal candle ', fmtTime(x.signalT)),
         ),
-        h('button.btn.ghost', { type: 'button', onclick: () => go('token', x.symbol) }, 'Chart'),
+        h('div.toolbar-right',
+          h('button.btn.ghost', { type: 'button', onclick: async () => {
+            const plan = [`${ticker(x.symbol)} ${long ? 'LONG' : 'SHORT'} · ${x.tf} · ${m.name}`, `Entry ${fmtPrice(x.entry)}${x.state === 'limit' ? ' (limit)' : ''}`, `Stop ${fmtPrice(x.stop)}`, `TP1 ${fmtPrice(x.tp1)} (half)`, `TP2 ${fmtPrice(x.tp2)}`, x.tp3 != null ? `TP3 ${fmtPrice(x.tp3)}` : null, 'Not financial advice.'].filter(Boolean).join('\n');
+            toast((await copyText(plan)) ? 'Plan copied' : 'Your browser blocked the clipboard.');
+          } }, 'Copy plan'),
+          h('button.btn.ghost', { type: 'button', onclick: () => go('token', x.symbol) }, 'Chart')),
       ),
       h('div.levels',
         lvl(x.state === 'limit' ? 'Entry (limit)' : 'Entry', x.entry, null),
@@ -301,8 +307,8 @@ export function ideasView(root, { go }) {
   }
 
   restart().catch((e) => (statusLine.textContent = e.message));
-  const priceTimer = setInterval(refreshPrices, 10_000);
-  const frameTimer = setInterval(() => tick().catch(() => {}), 20_000);
+  const priceTimer = visibleInterval(refreshPrices, 10_000);
+  const frameTimer = visibleInterval(() => tick().catch(() => {}), 20_000);
   return () => {
     alive = false;
     clearInterval(priceTimer);

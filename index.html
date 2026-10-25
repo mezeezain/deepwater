@@ -3,15 +3,37 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Deepwater</title>
-<meta name="description" content="Binance futures positioning: whales vs crowd, pump scanner, liquidations, funding and a futures calculator.">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<title>Deepwater: Binance futures whale positioning, pumps and liquidations</title>
+<meta name="description" content="Binance futures positioning: whales vs crowd, pump scanner, liquidations, funding and a futures calculator. Free, no sign-up, read-only public data.">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https: wss: http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'self'; form-action 'self'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0b6e6a">
+<link rel="canonical" href="https://mezeezain.github.io/deepwater/">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="assets/icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Deepwater">
+<meta property="og:title" content="Deepwater: where the big money leans">
+<meta property="og:description" content="Binance futures positioning: whales vs crowd, pump scanner, liquidations, funding and a futures calculator.">
+<meta property="og:url" content="https://mezeezain.github.io/deepwater/">
+<meta property="og:image" content="https://mezeezain.github.io/deepwater/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Deepwater: where the big money leans">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Deepwater: where the big money leans">
+<meta name="twitter:description" content="Binance futures positioning: whales vs crowd, pump scanner, liquidations, funding and a futures calculator.">
+<meta name="twitter:image" content="https://mezeezain.github.io/deepwater/assets/og.png">
+<link rel="preconnect" href="https://fapi.binance.com" crossorigin>
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..700&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap"></noscript>
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
 <!--APP-->
+<a class="skip" href="#main">Skip to main content</a>
 <header class="topbar">
   <div class="topbar-inner">
     <a class="brand" href="#whales" aria-label="Deepwater home">
@@ -19,15 +41,17 @@
       Deepwater
     </a>
     <span id="demo-pill" class="demo-pill" hidden title="Simulated data, not real market prices">DEMO</span>
-    <nav id="nav" aria-label="Tools"></nav>
+    <nav id="nav" aria-label="Tools"><a href="#whales">Whales</a> <a href="#pumps">Pump catcher</a> <a href="#guide">Guide</a></nav>
     <form id="jump" role="search">
-      <input id="jump-input" type="search" placeholder="Open pair: SOL" aria-label="Open a pair by ticker" autocomplete="off" spellcheck="false">
+      <input id="jump-input" type="search" placeholder="Open pair: SOL" aria-label="Open a pair by ticker" enterkeyhint="go" autocomplete="off" spellcheck="false">
     </form>
   </div>
 </header>
 <div id="statusbar"><div class="wrap"><div id="status" role="status"></div></div></div>
-<main id="main" class="wrap"></main>
-<footer><div class="wrap">Data: Binance USDⓈ-M futures public API. Positioning data, not financial advice.</div></footer>
+<main id="main" class="wrap" tabindex="-1">
+  <noscript><div class="noscript"><h1>Deepwater needs JavaScript</h1><p>Deepwater reads live Binance futures data in your browser and draws the tables and charts there, so it cannot show anything with JavaScript turned off. Please enable it and reload.</p></div></noscript>
+</main>
+<footer><div class="wrap"><p>Data: Binance USDⓈ-M futures public API. Positioning data, not financial advice. Futures trading can lose more than you put in. Deepwater is independent and not affiliated with Binance.</p><p><a href="#guide">How to read this</a> · <a href="https://github.com/mezeezain/deepwater">Source on GitHub</a> · MIT licence</p></div></footer>
 <script type="module" src="js/app.js"></script>
 <!--/APP-->
 </body>

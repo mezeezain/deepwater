@@ -31,7 +31,10 @@ Add `?demo` to the URL to use a simulated market. The app also switches to demo 
 | Liquidations | `#liquidations` | A live sample of forced liquidations by pair, long vs short (Binance's stream sends at most one per pair per second) |
 | Heatmap | `#heatmap` | Pairs sized by volume, coloured by 24h change or funding |
 | Funding | `#funding` | Every pair's funding, yearly equivalent, time to next payment |
-| Calculator | `#calculator` | Profit after fees, return on margin, break-even and estimated liquidation price |
+| Calculator | `#calculator` | Profit after fees, return on margin, break-even and estimated liquidation price; inputs are validated (leverage 1–125, maintenance rate below 1/leverage) |
+| Guide | `#guide` | What each screen shows, a glossary (whales, crowd, T20, gap, contrarian, funding…), data sources and limits |
+
+The pair page keeps its interval and layers in the address (`#SOLUSDT?i=4h&l=gap,cvd`), so a view can be shared. Navigation is grouped into Signals, Markets and Risk menus; pair names in tables are real links, there is a skip link, and focus moves to the page content after navigating.
 
 ## Chart layers
 
@@ -96,8 +99,10 @@ node worker/smartmoney.mjs --probe BTCUSDT
 # 2. Run the server (polls the 120 most traded pairs, one request every 1.2s ≈ one sweep every 2.5 minutes)
 ALLOW_ORIGIN=https://<you>.github.io node worker/smartmoney.mjs
 
-# Or set everything up on a fresh Ubuntu VPS (Node, service, firewall, DuckDNS, HTTPS) in one step:
-curl -fsSL https://raw.githubusercontent.com/mezeezain/deepwater/main/deploy/setup.sh | bash
+# Or set everything up on a fresh Ubuntu VPS (Node, service, firewall, DuckDNS, HTTPS) in one step.
+# Download it, read it, then run it (it uses sudo to install packages and open ports):
+curl -fsSLo setup.sh https://raw.githubusercontent.com/mezeezain/deepwater/main/deploy/setup.sh
+less setup.sh && bash setup.sh
 
 # Try the whole flow without Binance
 node worker/smartmoney.mjs --demo
@@ -105,7 +110,9 @@ node worker/smartmoney.mjs --demo
 
 Then on the **Whales** page, open **Whale data** and paste the server's address. The page is served over HTTPS, so the server needs HTTPS too: put it behind Caddy, nginx or a Cloudflare tunnel.
 
-API: `GET /api/health`, `GET /api/overview` (latest numbers for every pair), `GET /api/symbol/BTCUSDT?since=<ms>` (snapshot history). Snapshots are kept for `KEEP_HOURS` (default 720, 30 days) in `worker/data/`. Settings are at the top of the file.
+API: `GET /api/health` (thin and public; add `?detail=1` on the machine itself for counters and errors), `GET /api/overview` (latest numbers for every pair), `GET /api/positioning` (the four hourly ratio series for the top `POSITIONING_TOP` pairs, cached and refreshed every 10 minutes, so the Whales page makes one request instead of about 240 to Binance; the page falls back to Binance directly if the server lacks it), `GET /api/symbol/BTCUSDT?since=<ms>` (snapshot history). Snapshots are kept for `KEEP_HOURS` (default 720, 30 days) in `worker/data/`. Settings are at the top of the file.
+
+**Server hardening (both servers).** They listen on `127.0.0.1` by default (put Caddy/nginx in front; set `HOST=0.0.0.0` only for direct access), allow cross-origin reads only from `ALLOW_ORIGIN` (comma-separated; default the Deepwater site and `localhost:8000`, `*` to open it up), answer `GET` only, rate-limit each client to `RATE_LIMIT` requests a minute (default 120), and send `nosniff` / `no-referrer` headers. The web app only accepts an `https://` server address (plain `http://` only for localhost).
 
 **Before you rely on it:**
 - The endpoint is undocumented. Binance can change or remove it at any time, and using it may not be allowed by Binance's terms. Read them for your use case.
@@ -246,9 +253,14 @@ js/demo-market.js       simulated market with the same interface
 js/catcher-app.js       browser scanner or shared server log, alerts (toast, sound, desktop notification)
 js/api.js               Binance client for the other screens: request queue, cache, live/demo switch
 js/demo.js              sample data for the other screens
-js/util.js              h() DOM helper, formatters, watchlist, CSV
+js/util.js              h() DOM helper, fill(), formatters, watchlist, CSV
+js/route.js             pure hash parsing/building and pair-name normalising (unit-tested)
+js/validate.js          server-URL and number validation (unit-tested)
+js/views/guide.js       the in-app guide and glossary
+worker/http-util.mjs    CORS allow-list, rate limit and headers shared by both servers
+assets/, manifest.webmanifest, robots.txt, sitemap.xml, 404.html   icons, social image, install manifest, crawler files
 js/chart.js             canvas candle chart with share overlays and level lines; SVG sparkline
-js/app.js               hash router and navigation
+js/app.js               router (pages load on demand), grouped navigation, focus handling
 js/views/*.js           one file per screen; each returns a cleanup function
 worker/catcher.mjs      Node worker: round-the-clock scanning, shared signal log API, Telegram alerts
 tools/backtest.mjs      downloads Binance history and runs the backtest
@@ -257,7 +269,8 @@ tools/setups.mjs        setups lab over many pairs, from a server
 js/ideas.js             live setups: active plans, evidence grade, comparable history, trigger levels (pure functions)
 deploy/setup.sh         one-step VPS setup: both servers, firewall, DuckDNS, HTTPS, weekly backtest
 worker/smartmoney.mjs   whale data server: polls Smart Money data, stores snapshots, serves the app
-test/*.test.mjs         engine and indicator tests (node --test)
+test/*.test.mjs         engine, indicator, router, validation and server-helper tests (`npm test` or `node --test`)
+.github/workflows/ci.yml   runs the tests and syntax checks on every push
 ```
 
 ## Moving it into your own app
@@ -282,3 +295,13 @@ test/*.test.mjs         engine and indicator tests (node --test)
 | Liquidations (live) | stream `!forceOrder@arr` |
 
 Not financial advice.
+
+## Security and privacy
+
+- `index.html` carries a Content-Security-Policy: scripts and styles only from this site (plus Google Fonts for typefaces), no inline script, connections only over `https:`/`wss:` (plus `localhost` for local servers).
+- Everything is read-only public market data; there are no accounts, API keys or cookies. Settings (watchlist, interface choices, server address) stay in your browser's local storage.
+- The page is not affiliated with Binance. Nothing here is financial advice.
+
+## Licence
+
+MIT, see `LICENSE`.

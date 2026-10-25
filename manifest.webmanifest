@@ -1,0 +1,15 @@
+{
+  "name": "Deepwater",
+  "short_name": "Deepwater",
+  "description": "Binance futures positioning: whales vs crowd, pump scanner, liquidations, funding and a futures calculator.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0a1215",
+  "theme_color": "#0b6e6a",
+  "icons": [
+    { "src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "assets/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

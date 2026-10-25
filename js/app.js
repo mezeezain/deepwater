@@ -1,75 +1,157 @@
 // App shell: navigation, routing by #hash, live/demo status.
 import { status, ensureMode, setDemo, retryLive } from './api.js';
-import { h, $, store } from './util.js';
-import { whalesView } from './views/whales.js';
-import { tokenView } from './views/token.js';
-import { pumpsView } from './views/pumps.js';
-import { signalView } from './views/signal.js';
-import { liqmapView } from './views/liqmap.js';
-import { fundingView } from './views/funding.js';
-import { liquidationsView } from './views/liquidations.js';
-import { heatmapView } from './views/heatmap.js';
-import { calculatorView } from './views/calculator.js';
-import { setupsView } from './views/setups.js';
-import { ideasView } from './views/ideas.js';
+import { h, $, store, toast, fill } from './util.js';
+import { parseHash, buildHash, normalizePair, ROUTE_IDS } from './route.js';
 
+// Views load on demand so the first screen only downloads what it shows.
+const lazy = (path, name) => () => import(path).then((m) => m[name]);
 const ROUTES = {
-  whales: { label: 'Whales', view: whalesView },
-  pumps: { label: 'Pump catcher', view: pumpsView },
-  charts: { label: 'Charts', view: (root, ctx) => tokenView(root, { ...ctx, symbol: store.get('last-pair', 'BTCUSDT') }) },
-  ideas: { label: 'Live setups', view: ideasView },
-  setups: { label: 'Setups lab', view: setupsView },
-  liqmap: { label: 'Liq map', view: liqmapView },
-  liquidations: { label: 'Liquidations', view: liquidationsView },
-  heatmap: { label: 'Heatmap', view: heatmapView },
-  funding: { label: 'Funding', view: fundingView },
-  calculator: { label: 'Calculator', view: calculatorView },
+  whales: { label: 'Whales', load: lazy('./views/whales.js', 'whalesView') },
+  pumps: { label: 'Pump catcher', load: lazy('./views/pumps.js', 'pumpsView') },
+  charts: { label: 'Charts', load: () => import('./views/token.js').then((m) => (root, ctx) => m.tokenView(root, { ...ctx, symbol: store.get('last-pair', 'BTCUSDT') })) },
+  ideas: { label: 'Live setups', load: lazy('./views/ideas.js', 'ideasView') },
+  setups: { label: 'Setups lab', load: lazy('./views/setups.js', 'setupsView') },
+  liqmap: { label: 'Liq map', load: lazy('./views/liqmap.js', 'liqmapView') },
+  liquidations: { label: 'Liquidations', load: lazy('./views/liquidations.js', 'liquidationsView') },
+  heatmap: { label: 'Heatmap', load: lazy('./views/heatmap.js', 'heatmapView') },
+  funding: { label: 'Funding', load: lazy('./views/funding.js', 'fundingView') },
+  calculator: { label: 'Calculator', load: lazy('./views/calculator.js', 'calculatorView') },
+  guide: { label: 'Guide', load: lazy('./views/guide.js', 'guideView') },
 };
+const EXTRA = { token: lazy('./views/token.js', 'tokenView'), signal: lazy('./views/signal.js', 'signalView') };
+if (ROUTE_IDS.some((id) => !ROUTES[id])) throw new Error('route table out of sync with route.js');
+
+// Navigation: one link, three small menus. Fewer top-level items fit any screen width.
+const NAV = [
+  { id: 'whales' },
+  { group: 'Signals', items: ['pumps', 'ideas', 'setups'] },
+  { group: 'Markets', items: ['charts', 'funding', 'heatmap'] },
+  { group: 'Risk', items: ['liqmap', 'liquidations', 'calculator'] },
+  { id: 'guide' },
+];
+
+// Web fonts load after first paint (a stylesheet in <head> would block rendering); system fonts show meanwhile.
+const fontLink = document.createElement('link');
+fontLink.rel = 'stylesheet';
+fontLink.href = 'https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..700&family=JetBrains+Mono:wght@400;500;600&display=swap';
+document.head.append(fontLink);
 
 const main = $('#main');
 const nav = $('#nav');
 const banner = $('#status');
 let dispose = () => {};
+let seq = 0;
+let first = true;
 
-// Routes are bare hash tokens: #whales, #pumps, a pair such as #SOLUSDT, or a signal: #sig-SOLUSDT-1730000000000.
-function parse() {
-  const token = decodeURIComponent(location.hash.slice(1));
-  if (ROUTES[token]) return { route: token };
-  if (token.startsWith('sig-')) return { route: 'signal', id: token.slice(4) };
-  if (token.startsWith('liqmap-')) return { route: 'liqmap', symbol: token.slice(7) };
-  if (/^[A-Z0-9\u4e00-\u9fff]+USDT$/.test(token)) return { route: 'token', symbol: token };
-  return { route: 'whales' };
-}
-
-export function go(route, arg) {
-  const hash = route === 'token' ? arg : route === 'signal' ? `sig-${arg}` : route === 'liqmap' && arg ? `liqmap-${arg}` : route;
+export function go(route, arg, params) {
+  const hash = buildHash(route, arg, params);
   if (location.hash.slice(1) === hash) render();
   else location.hash = hash;
 }
 
-function render() {
-  const { route, symbol, id } = parse();
+/** Update the query part of the current address without adding a history entry (shareable view state). */
+export function setParams(params) {
+  const { route, symbol, id } = parseHash(location.hash);
+  const hash = '#' + buildHash(route, route === 'signal' ? id : symbol, params);
+  if (location.hash !== hash) history.replaceState(null, '', hash);
+}
+
+async function render() {
+  const mine = ++seq;
+  const { route, symbol, id, params, unknown } = parseHash(location.hash);
   dispose();
-  window.scrollTo(0, 0);
+  dispose = () => {};
   const navRoute = route === 'signal' ? 'pumps' : route === 'token' ? 'charts' : route;
-  nav.querySelectorAll('a').forEach((a) => a.setAttribute('aria-current', a.dataset.route === navRoute ? 'page' : 'false'));
-  const view = route === 'token' ? tokenView : route === 'signal' ? signalView : ROUTES[route].view;
-  dispose = view(main, { symbol, id, go }) || (() => {});
+  markNav(navRoute);
+  window.scrollTo(0, 0);
+  main.setAttribute('aria-busy', 'true');
+  fill(main, h('div.loading', { role: 'status' }, 'Loading…'));
+  let view;
+  try {
+    view = await (route === 'token' || route === 'signal' ? EXTRA[route] : ROUTES[route].load)();
+  } catch (e) {
+    if (mine !== seq) return;
+    main.removeAttribute('aria-busy');
+    fill(main, h('section.panel', h('h2', 'This page could not load'), h('p.note', 'Check your connection and reload. ' + (e?.message || ''))));
+    return;
+  }
+  if (mine !== seq) return; // a newer navigation won
+  fill(main, );
+  main.removeAttribute('aria-busy');
+  try {
+    dispose = view(main, { symbol, id, params, go, setParams }) || (() => {});
+  } catch (e) {
+    console.error(e);
+    fill(main, h('section.panel', h('h2', 'Something went wrong on this page'), h('p.note', 'Reload to try again. ' + (e?.message || ''))));
+  }
+  const label = ROUTES[route]?.label;
   document.title = (status.mode === 'demo' ? 'DEMO · ' : '') + (
     route === 'token' ? `${symbol.replace(/USDT$/, '')} · Deepwater`
     : route === 'liqmap' && symbol ? `${symbol.replace(/USDT$/, '')} liquidation map · Deepwater`
     : route === 'signal' ? `${id.split('-')[0].replace(/USDT$/, '')} signal · Deepwater`
-    : `Deepwater · ${ROUTES[route].label}`);
+    : `Deepwater · ${label}`);
+  // Move keyboard and screen-reader focus to the new page (not on the very first load).
+  if (!first) main.focus({ preventScroll: true });
+  first = false;
+  if (unknown) toast('That address is not a page here, so Whales is shown.');
 }
 
-nav.replaceChildren(...Object.entries(ROUTES).map(([id, r]) => h('a', { href: '#' + id, 'data-route': id }, r.label)));
+function markNav(active) {
+  nav.querySelectorAll('a[data-route]').forEach((a) => {
+    if (a.dataset.route === active) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  });
+  nav.querySelectorAll('button[data-group]').forEach((b) => {
+    const has = ROUTES[active] && NAV.find((n) => n.group === b.dataset.group)?.items.includes(active);
+    if (has) b.setAttribute('data-current', 'true');
+    else b.removeAttribute('data-current');
+  });
+}
+
+function closeMenus(except) {
+  nav.querySelectorAll('button[data-group][aria-expanded="true"]').forEach((b) => {
+    if (b === except) return;
+    b.setAttribute('aria-expanded', 'false');
+    b.nextElementSibling.hidden = true;
+  });
+}
+
+function buildNav() {
+  const link = (id) => h('a', { href: '#' + id, 'data-route': id }, ROUTES[id].label);
+  fill(nav, ...NAV.map((n, i) => {
+    if (n.id) return link(n.id);
+    const menuId = `menu-${i}`;
+    const btn = h('button', { type: 'button', 'data-group': n.group, 'aria-expanded': 'false', 'aria-controls': menuId }, n.group, h('span.caret', { 'aria-hidden': 'true' }, '▾'));
+    const menu = h('div.menu', { id: menuId, hidden: true }, n.items.map(link));
+    btn.addEventListener('click', () => {
+      const open = btn.getAttribute('aria-expanded') === 'true';
+      closeMenus(btn);
+      btn.setAttribute('aria-expanded', String(!open));
+      menu.hidden = open;
+    });
+    return h('div.group', btn, menu);
+  }));
+  nav.addEventListener('click', (e) => { if (e.target.closest('.menu a')) closeMenus(); });
+  nav.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const open = nav.querySelector('button[aria-expanded="true"]');
+    if (open) { closeMenus(); open.focus(); }
+  });
+  nav.addEventListener('focusout', (e) => { if (!e.relatedTarget || !nav.contains(e.relatedTarget)) closeMenus(); });
+  document.addEventListener('click', (e) => { if (!nav.contains(e.target)) closeMenus(); });
+}
+buildNav();
 
 $('#jump').addEventListener('submit', (e) => {
   e.preventDefault();
-  const v = $('#jump-input').value.trim().toUpperCase();
-  if (!v) return;
-  go('token', v.endsWith('USDT') ? v : v + 'USDT');
-  $('#jump-input').value = '';
+  const input = $('#jump-input');
+  const sym = normalizePair(input.value);
+  if (!sym) {
+    if (input.value.trim()) toast('Type a ticker such as SOL or BTCUSDT.');
+    return;
+  }
+  go('token', sym);
+  input.value = '';
 });
 
 const statusbar = $('#statusbar');
@@ -85,7 +167,7 @@ function paintStatus(mode, reason) {
   if (!document.title.startsWith('DEMO · ') && demo) document.title = 'DEMO · ' + document.title;
   clearInterval(countdown);
   if (mode === 'live') {
-    banner.replaceChildren(h('span.dot'), 'Live data from Binance');
+    fill(banner, h('span.dot'), 'Live data from Binance');
   } else if (mode === 'demo') {
     const retry = h('span.retry');
     const tick = () => {
@@ -94,7 +176,7 @@ function paintStatus(mode, reason) {
     };
     tick();
     if (!status.chosen) countdown = setInterval(tick, 1000);
-    banner.replaceChildren(
+    fill(banner, 
       h('span.dot'),
       h('span', h('strong', 'DEMO DATA: simulated, not real market prices. '), reason ? reason + ' ' : '', retry),
       status.chosen
@@ -102,9 +184,9 @@ function paintStatus(mode, reason) {
         : h('button.btn', { onclick: async (e) => { e.target.disabled = true; e.target.textContent = 'Checking…'; if (!(await retryLive())) { e.target.disabled = false; e.target.textContent = 'Try live now'; } } }, 'Try live now'),
     );
   } else if (mode === 'reconnected') {
-    banner.replaceChildren(h('span.dot'), h('strong', reason));
+    fill(banner, h('span.dot'), h('strong', reason));
   } else {
-    banner.replaceChildren(h('span.dot'), 'Connecting to Binance…');
+    fill(banner, h('span.dot'), 'Connecting to Binance…');
   }
 }
 status.listeners.add(paintStatus);
@@ -114,8 +196,13 @@ paintStatus(status.mode);
 document.addEventListener('catcher-alert', (e) => {
   const { sig, text } = e.detail;
   const el = h('button.alert-toast', { onclick: () => { el.remove(); go('signal', sig.id); } }, h('strong', 'Pump alert '), text);
-  document.body.append(el);
-  setTimeout(() => el.remove(), 8000);
+  let live = document.getElementById('alerts');
+  if (!live) {
+    live = h('div#alerts', { role: 'status', 'aria-live': 'polite' });
+    document.body.append(live);
+  }
+  live.append(el);
+  setTimeout(() => el.remove(), 12000);
 });
 
 window.addEventListener('hashchange', render);

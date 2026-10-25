@@ -1,5 +1,5 @@
 // Futures calculator: profit, return on margin, fees and an estimated liquidation price.
-import { h, fmtPrice, fmtUsd, fmtPct, signClass, store } from '../util.js';
+import { h, fmtPrice, fmtUsd, fmtPct, signClass, store, fill } from '../util.js';
 
 /**
  * Isolated-margin estimate. Exchange liquidation uses tiered maintenance rates,
@@ -19,13 +19,31 @@ export function calc({ side, entry, exit, margin, leverage, feeRate, mmr }) {
   return { notional, qty, gross, fees, net, roe: (net / margin) * 100, liq: Math.max(0, liq), breakeven, liqDistance: ((liq - entry) / entry) * 100 };
 }
 
+const DEFAULTS = { side: 'long', entry: 65000, exit: 68000, margin: 500, leverage: 10, feeRate: 0.0005, mmr: 0.004 };
+
+/** Reasons the inputs can't be calculated, or [] when they are fine. */
+export function problems(s) {
+  const out = [];
+  if (!(s.entry > 0)) out.push('Entry price must be above zero.');
+  if (!(s.exit > 0)) out.push('Exit price must be above zero.');
+  if (!(s.margin > 0)) out.push('Margin must be above zero.');
+  if (!(s.leverage >= 1 && s.leverage <= 125)) out.push('Leverage must be between 1 and 125.');
+  if (!(s.mmr >= 0 && s.mmr < 0.1)) out.push('Maintenance margin rate must be between 0 and 0.1 (10%).');
+  else if (s.leverage >= 1 && s.leverage <= 125 && s.mmr >= 1 / s.leverage) out.push(`At ${s.leverage}x the maintenance margin rate must be below ${(100 / s.leverage).toFixed(2)}%, otherwise the position would be liquidated on entry.`);
+  if (!(s.feeRate >= 0 && s.feeRate < 0.01)) out.push('Fee per side must be between 0% and 1%.');
+  return out;
+}
+
 export function calculatorView(root) {
-  let s = store.get('calc', { side: 'long', entry: 65000, exit: 68000, margin: 500, leverage: 10, feeRate: 0.0005, mmr: 0.004 });
-  const out = h('div.calc-out');
+  const saved = store.get('calc', DEFAULTS);
+  // Saved settings from an older version or a hand-edited store must not poison the page with NaN.
+  let s = Object.fromEntries(Object.entries(DEFAULTS).map(([k, v]) => [k, typeof v === typeof saved?.[k] && (typeof v !== 'number' || Number.isFinite(saved[k])) ? saved[k] : v]));
+  if (s.side !== 'long' && s.side !== 'short') s.side = 'long';
+  const out = h('div.calc-out', { 'aria-live': 'polite' });
   let levNum;
 
   const num = (id, label, key, attrs = {}) => h('label.field', h('span', label),
-    h('input', { id: 'calc-' + id, type: 'number', inputMode: 'decimal', value: s[key], ...attrs, oninput: (e) => { s[key] = +e.target.value; update(); } }));
+    h('input', { id: 'calc-' + id, type: 'number', inputMode: 'decimal', value: s[key], ...attrs, oninput: (e) => { s[key] = e.target.value === '' ? NaN : +e.target.value; update(); } }));
 
   const sideBtns = h('div.segmented', { role: 'radiogroup', 'aria-label': 'Side' },
     ...['long', 'short'].map((v) => h(`button.seg.${v}`, { type: 'button', role: 'radio', 'aria-checked': String(s.side === v), onclick: (e) => {
@@ -34,7 +52,7 @@ export function calculatorView(root) {
       update();
     } }, v === 'long' ? 'Long' : 'Short')));
 
-  root.replaceChildren(
+  fill(root, 
     h('section.hero.compact', h('div.hero-text',
       h('p.eyebrow', 'Isolated margin, USDT-margined'),
       h('h1', 'Futures calculator'),
@@ -48,7 +66,7 @@ export function calculatorView(root) {
           num('margin', 'Margin (USDT)', 'margin', { min: 0, step: 'any' }),
           h('label.field', h('span', 'Leverage'),
             h('div.range-row',
-              h('input#calc-lev-range', { type: 'range', min: 1, max: 125, value: s.leverage, oninput: (e) => { s.leverage = +e.target.value; levNum.value = s.leverage; update(); } }),
+              h('input#calc-lev-range', { 'aria-label': 'Leverage slider', type: 'range', min: 1, max: 125, value: s.leverage, oninput: (e) => { s.leverage = +e.target.value; levNum.value = s.leverage; update(); } }),
               (levNum = h('input#calc-leverage', { type: 'number', min: 1, max: 125, value: s.leverage, 'aria-label': 'Leverage', oninput: (e) => { s.leverage = +e.target.value; update(); } })))),
           h('label.field', h('span', 'Fee per side'),
             h('select#calc-fee', { onchange: (e) => { s.feeRate = +e.target.value; update(); } },
@@ -61,13 +79,14 @@ export function calculatorView(root) {
 
   function update() {
     store.set('calc', s);
-    if (!(s.entry > 0 && s.exit > 0 && s.margin > 0 && s.leverage >= 1)) {
-      out.replaceChildren(h('p.error', 'Enter an entry price, exit price and margin above zero, and leverage of at least 1.'));
+    const bad = problems(s);
+    if (bad.length) {
+      fill(out, ...bad.map((m) => h('p.error', m)));
       return;
     }
     const r = calc(s);
     const exitBeyondLiq = s.side === 'long' ? s.exit <= r.liq : s.exit >= r.liq;
-    out.replaceChildren(...[
+    fill(out, ...[
       h(`div.big.${signClass(r.net)}`, fmtUsd(r.net, true)),
       h(`p.${signClass(r.roe)}`, `${fmtPct(r.roe)} on margin`),
       exitBeyondLiq && h('p.warn', 'Your exit price is past the liquidation price. The position would be closed before reaching it.'),

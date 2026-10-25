@@ -1,7 +1,8 @@
 // Setups lab: three structure setups replayed with realistic fills and costs, split by whale positioning.
 import { getLabData, getSmartOverview, isDemo } from '../api.js';
 import { MODELS, LAB_DEFAULTS, runLab, breakdown } from '../setups.js';
-import { h, ticker, fmtPrice, fmtPct, signClass, csv, copyText, toast, store } from '../util.js';
+import { normalizePair } from '../route.js';
+import { h, ticker, pairLink, fmtPrice, fmtPct, signClass, csv, copyText, toast, store, fill, riskNote } from '../util.js';
 
 const FRAMES = ['15m', '1h', '4h'];
 const WHALE_LABEL = { with: 'Whales agree', neutral: 'No clear lean', against: 'Whales disagree', none: 'No whale data (older than 30 days)' };
@@ -22,10 +23,11 @@ export function setupsView(root, { go }) {
   const whalesBox = h('div');
   const liveBox = h('div');
   const tradesBox = h('div.table-wrap');
-  const frameBtns = h('div.lenses', { role: 'tablist', 'aria-label': 'Timeframe' });
+  const frameBtns = h('div.lenses', { role: 'group', 'aria-label': 'Timeframe' });
   const pairsInput = h('input#lab-pairs', { value: pairs, 'aria-label': 'Pairs, comma separated', spellcheck: false, autocomplete: 'off' });
 
-  root.replaceChildren(
+  fill(root, 
+    riskNote('Backtests overfit easily and ignore slippage; treat them as a sanity check. '),
     h('section.hero.compact',
       h('div.hero-text',
         h('p.eyebrow', 'Sweep reclaim · Breakout retest · Regime confluence'),
@@ -60,15 +62,18 @@ export function setupsView(root, { go }) {
   );
 
   function paintFrames() {
-    frameBtns.replaceChildren(...FRAMES.map((f) => h('button.lens', { type: 'button', role: 'tab', 'aria-selected': String(f === frame), onclick: () => { frame = f; store.set('lab-frame', f); paintFrames(); run(); } }, f)));
+    fill(frameBtns, ...FRAMES.map((f) => h('button.lens', { type: 'button', 'aria-pressed': String(f === frame), onclick: () => { frame = f; store.set('lab-frame', f); paintFrames(); run(); } }, f)));
   }
   paintFrames();
 
   async function run() {
     pairs = pairsInput.value;
     store.set('lab-pairs', pairs);
-    const symbols = [...new Set(pairs.split(/[\s,]+/).map((s) => s.trim().toUpperCase()).filter(Boolean).map((s) => (s.endsWith('USDT') ? s : s + 'USDT')))].slice(0, 8);
-    if (!symbols.length) return;
+    const symbols = [...new Set(pairs.split(/[\s,]+/).map(normalizePair).filter(Boolean))].slice(0, 8);
+    if (!symbols.length) {
+      status.textContent = 'Type at least one pair, such as BTC ETH SOL.';
+      return;
+    }
     status.textContent = `Downloading ${symbols.length} pair${symbols.length > 1 ? 's' : ''} on ${frame}…`;
     const runFrame = frame;
     const per = [];
@@ -97,6 +102,7 @@ export function setupsView(root, { go }) {
     status.textContent = (await isDemo() ? 'Simulated data (demo). ' : '') +
       `${trades.length} trades on ${per.length} pair${per.length === 1 ? '' : 's'}, ${frame} candles, about ${days} days.` +
       (result.unfilled ? ` ${result.unfilled} retest orders never filled.` : '') +
+      (trades.length < 30 ? ' Fewer than 30 trades, so the percentages below are anecdotes, not evidence.' : '') +
       (failed.length ? ` Skipped: ${failed.join(', ')}.` : '');
     render();
   }
@@ -104,7 +110,7 @@ export function setupsView(root, { go }) {
   function statCells(s) {
     if (!s || !s.n) return [h('td.num', '0'), h('td.num', '–'), h('td.num', '–'), h('td.num', '–'), h('td.num', '–'), h('td.num', '–')];
     return [
-      h('td.num', s.n),
+      h('td.num', s.n, s.n < 30 && h('span.sub', { title: 'Fewer than 30 trades: the percentages beside it are not reliable' }, ' low n')),
       h('td.num', fmtRate(s.paperWin)),
       h(`td.num.${s.netWin >= 0.5 ? 'up' : ''}`, fmtRate(s.netWin)),
       h('td.num', fmtPf(s.pf)),
@@ -116,7 +122,7 @@ export function setupsView(root, { go }) {
   function render() {
     const { b, trades, open, smart } = result;
     const head = h('thead', h('tr', h('th', { scope: 'col' }, 'Setup'), h('th', { scope: 'col' }, 'Trades'), h('th', { scope: 'col' }, 'Paper win'), h('th', { scope: 'col' }, 'Net win'), h('th', { scope: 'col' }, 'Profit factor'), h('th', { scope: 'col' }, 'Expectancy (95% range)'), h('th', { scope: 'col' }, 'Costs / trade')));
-    modelsBox.replaceChildren(h('table.grid.lab',
+    fill(modelsBox, h('table.grid.lab',
       head,
       h('tbody',
         Object.entries(MODELS).map(([id, m]) => h('tr.static', h('th.pair', { scope: 'row', title: m.about }, m.name, h('span.sub', ` TP1 ${m.tp1}R · target ${m.target}R`)), ...statCells(b.models[id]))),
@@ -132,7 +138,7 @@ export function setupsView(root, { go }) {
         rows.push(h('tr.static', h('th.pair', { scope: 'row' }, m.name, h('span.sub', ` ${WHALE_LABEL[w]}`)), ...statCells(s)));
       }
     }
-    whalesBox.replaceChildren(
+    fill(whalesBox, 
       h('p.verdict', verdict(b.whales)),
       h('div.table-wrap', h('table.grid.lab',
         h('thead', h('tr', h('th', { scope: 'col' }, 'Setup · whales'), h('th', { scope: 'col' }, 'Trades'), h('th', { scope: 'col' }, 'Paper win'), h('th', { scope: 'col' }, 'Net win'), h('th', { scope: 'col' }, 'Profit factor'), h('th', { scope: 'col' }, 'Expectancy (95% range)'), h('th', { scope: 'col' }, 'Costs / trade'))),
@@ -143,15 +149,15 @@ export function setupsView(root, { go }) {
     );
 
     // Latest setups, with exact Smart Money context where the whale server has it
-    liveBox.replaceChildren(open.length
+    fill(liveBox, open.length
       ? h('div.table-wrap', h('table.grid',
         h('thead', h('tr', h('th', { scope: 'col' }, 'Pair'), h('th', { scope: 'col' }, 'Setup'), h('th', { scope: 'col' }, 'Side'), h('th', { scope: 'col' }, 'Entry'), h('th', { scope: 'col' }, 'Stop'), h('th', { scope: 'col' }, 'Top 20% vs crowd'), h('th', { scope: 'col' }, 'Smart Money whales'), h('th', { scope: 'col' }, 'Candle'))),
         h('tbody', open.slice().reverse().map((s) => {
           const sm = smart?.rows?.get(s.symbol)?.shown;
           const entry = s.entryType === 'limit' ? s.level : s.bar.c;
           const stop = s.entryType === 'limit' ? s.level - s.side * s.stopAtr : s.stop;
-          return h('tr', { tabIndex: 0, onclick: () => go('token', s.symbol), onkeydown: (e) => e.key === 'Enter' && go('token', s.symbol) },
-            h('th.pair', { scope: 'row' }, h('span.pair-name', ticker(s.symbol))),
+          return h('tr', { onclick: () => go('token', s.symbol) },
+            h('th.pair', { scope: 'row' }, pairLink(s.symbol)),
             h('td.txt', MODELS[s.model].name),
             h(`td.txt.${s.side > 0 ? 'up' : 'down'}`, s.side > 0 ? 'Long' : 'Short'),
             h('td.num', (s.entryType === 'limit' ? 'limit ' : '~') + fmtPrice(entry)),
@@ -165,10 +171,10 @@ export function setupsView(root, { go }) {
 
     // Trades
     const recent = trades.slice().sort((a, c) => c.entryT - a.entryT).slice(0, 60);
-    tradesBox.replaceChildren(h('table.grid',
+    fill(tradesBox, h('table.grid',
       h('thead', h('tr', ...['Pair', 'Setup', 'Side', 'Entered', 'Stop dist.', 'Paper', 'Exit', 'Net', 'Net R', 'Whales'].map((x) => h('th', { scope: 'col' }, x)))),
-      h('tbody', recent.map((t) => h('tr', { tabIndex: 0, onclick: () => go('token', t.symbol), onkeydown: (e) => e.key === 'Enter' && go('token', t.symbol) },
-        h('th.pair', { scope: 'row' }, h('span.pair-name', ticker(t.symbol))),
+      h('tbody', recent.map((t) => h('tr', { onclick: () => go('token', t.symbol) },
+        h('th.pair', { scope: 'row' }, pairLink(t.symbol)),
         h('td.txt', MODELS[t.model].name),
         h(`td.txt.${t.side > 0 ? 'up' : 'down'}`, t.side > 0 ? 'Long' : 'Short'),
         h('td.num', new Date(t.entryT).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })),

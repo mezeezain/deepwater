@@ -3,6 +3,7 @@
 import * as demo from './demo.js';
 import { demoSnapshots } from './smartmoney-demo.js';
 import { pickCohort, summarize } from './smartmoney.js';
+import { cleanServerUrl } from './validate.js';
 
 const BASE = 'https://fapi.binance.com';
 const CACHE_MS = 60_000;
@@ -197,6 +198,38 @@ export async function getPositioning(symbol, period = '1h', limit = 25) {
   };
 }
 
+/**
+ * Positioning for many symbols at once: Map(symbol -> positioning). The whale data server keeps the same four
+ * series for its tracked pairs and serves them in one request; anything it does not have is fetched directly
+ * from Binance, a few at a time. onProgress(done, total) is called as pairs complete.
+ */
+export async function getPositioningMap(symbols, onProgress = () => {}) {
+  const out = new Map();
+  const total = symbols.length;
+  let done = 0;
+  const tick = () => onProgress(++done, total);
+  if (!(await isDemo())) {
+    try {
+      const body = await fromServer('/api/positioning', 120_000);
+      if (body && Date.now() - body.t < 30 * 60_000) {
+        for (const r of body.rows) if (r.whales?.length && r.crowd?.length) out.set(r.symbol, r);
+      }
+    } catch {
+      // The server being down only means falling back to Binance directly.
+    }
+  }
+  for (const sym of symbols) if (out.has(sym)) tick();
+  await Promise.all(symbols.filter((sym) => !out.has(sym)).map(async (sym) => {
+    try {
+      out.set(sym, await getPositioning(sym));
+    } catch {
+      // A pair without positioning data (new listing) is skipped.
+    }
+    tick();
+  }));
+  return out;
+}
+
 /** Candles: [{ t, o, h, l, c, v }] */
 export async function getCandles(symbol, interval = '1h', limit = 120) {
   if (await isDemo()) return demo.candles(symbol, interval, limit);
@@ -347,7 +380,8 @@ export const whaleServer = {
   get() {
     try {
       const saved = localStorage.getItem('dw:whale-server');
-      return saved == null ? DEFAULT_WHALE_SERVER : saved;
+      if (saved == null) return DEFAULT_WHALE_SERVER;
+      return saved === '' ? '' : cleanServerUrl(saved) || DEFAULT_WHALE_SERVER; // ignore a tampered or old unsafe value
     } catch {
       return DEFAULT_WHALE_SERVER;
     }
@@ -359,8 +393,10 @@ export const whaleServer = {
     cache.clear();
   },
   set(url) {
+    const clean = url ? cleanServerUrl(url) : '';
+    if (clean == null) throw new Error('Use an https:// address (http:// is allowed only for localhost).');
     try {
-      localStorage.setItem('dw:whale-server', url.replace(/\/+$/, ''));
+      localStorage.setItem('dw:whale-server', clean);
     } catch {}
     cache.clear();
   },
@@ -382,9 +418,11 @@ async function fromServer(path, ttl) {
 
 /** Check a whale data server address. Returns its health report or throws a readable error. */
 export async function testWhaleServer(url) {
+  const base = cleanServerUrl(url);
+  if (!base) throw new Error('Use an https:// address (http:// is allowed only for localhost).');
   let res;
   try {
-    res = await fetch(url.replace(/\/+$/, '') + '/api/health');
+    res = await fetch(base + '/api/health');
   } catch {
     throw new Error('Could not reach that address. Check the URL, that the server is running, and that it allows requests from this site (ALLOW_ORIGIN).');
   }
@@ -456,6 +494,20 @@ export async function getDepth(symbol) {
   return get('/fapi/v1/depth', { symbol, limit: 1000 }, 10_000);
 }
 
+/**
+ * Funding interval in hours per symbol (most are 8, some pairs settle every 4 or 1).
+ * Returns Map(symbol -> hours); symbols missing from the map use the 8 h default.
+ */
+export async function getFundingIntervals() {
+  if (await isDemo()) return new Map();
+  try {
+    const rows = await get('/fapi/v1/fundingInfo', {}, 60 * 60_000);
+    return new Map(rows.filter((r) => r.fundingIntervalHours).map((r) => [r.symbol, +r.fundingIntervalHours]));
+  } catch {
+    return new Map();
+  }
+}
+
 export async function getFundingHistory(symbol, limit = 30) {
   if (await isDemo()) return demo.fundingHistory(symbol, limit);
   const rows = await get('/fapi/v1/fundingRate', { symbol, limit }, 5 * 60_000);
@@ -477,10 +529,18 @@ export function streamLiquidations(onEvent) {
       timer = setInterval(() => onEvent(demo.liquidation()), 700);
       return;
     }
+    let delay = 3000;
     const connect = () => {
       ws = new WebSocket('wss://fstream.binance.com/ws/!forceOrder@arr');
       ws.onmessage = (msg) => {
-        const o = JSON.parse(msg.data).o;
+        delay = 3000;
+        let o;
+        try {
+          o = JSON.parse(msg.data).o;
+        } catch {
+          return;
+        }
+        if (!o) return;
         const qty = +o.z || +o.q;
         const price = +o.ap || +o.p;
         onEvent({
@@ -494,7 +554,10 @@ export function streamLiquidations(onEvent) {
         });
       };
       ws.onclose = () => {
-        if (!stopped) timer = setTimeout(connect, 3000);
+        if (!stopped) {
+          timer = setTimeout(connect, delay);
+          delay = Math.min(delay * 2, 60_000);
+        }
       };
     };
     connect();

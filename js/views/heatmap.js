@@ -1,6 +1,6 @@
 // Market heatmap: tile area by 24h volume, colour by price change (or funding).
 import { getMarket } from '../api.js';
-import { h, ticker, fmtPct, fmtUsd, fmtPrice } from '../util.js';
+import { h, ticker, fmtPct, fmtUsd, fmtPrice, fill } from '../util.js';
 
 export function heatmapView(root, { go }) {
   let metric = 'change24h';
@@ -8,7 +8,7 @@ export function heatmapView(root, { go }) {
   const grid = h('div.heat');
   const scaleNote = h('p.note');
 
-  root.replaceChildren(
+  fill(root, 
     h('section.hero.compact',
       h('div.hero-text',
         h('p.eyebrow', 'Top 60 pairs by 24h volume'),
@@ -17,11 +17,11 @@ export function heatmapView(root, { go }) {
       ),
     ),
     h('section.panel',
-      h('div.toolbar', h('div.lenses', { role: 'tablist', 'aria-label': 'Colour by' },
+      h('div.toolbar', h('div.lenses', { role: 'group', 'aria-label': 'Colour by' },
         ...[['change24h', '24h change'], ['funding', 'Funding']].map(([id, label]) =>
-          h('button.lens', { role: 'tab', 'aria-selected': String(id === metric), onclick: (e) => {
+          h('button.lens', { type: 'button', 'aria-pressed': String(id === metric), onclick: (e) => {
             metric = id;
-            e.target.parentNode.querySelectorAll('button').forEach((b) => b.setAttribute('aria-selected', String(b === e.target)));
+            e.target.parentNode.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b === e.target)));
             render();
           } }, label))), scaleNote),
       grid,
@@ -31,9 +31,9 @@ export function heatmapView(root, { go }) {
   function render() {
     const val = (r) => (metric === 'funding' ? (r.funding ?? 0) * 100 : r.change24h);
     const cap = metric === 'funding' ? 0.05 : 10;
-    scaleNote.textContent = metric === 'funding' ? 'Full colour at ±0.05% per 8h' : 'Full colour at ±10%';
+    scaleNote.textContent = metric === 'funding' ? 'Full colour at ±0.05% per funding payment' : 'Full colour at ±10%';
     const maxV = rows[0]?.quoteVolume || 1;
-    grid.replaceChildren(...rows.map((r) => {
+    fill(grid, ...rows.map((r) => {
       const v = val(r);
       return h('button.heat-tile', {
         style: { '--grow': Math.max(0.6, Math.sqrt(r.quoteVolume / maxV) * 8), '--t': Math.max(-1, Math.min(1, v / cap)) },
@@ -44,6 +44,6 @@ export function heatmapView(root, { go }) {
     }));
   }
 
-  getMarket().then((m) => { rows = m.slice(0, 60); render(); }).catch((e) => grid.replaceChildren(h('p.error', e.message)));
+  getMarket().then((m) => { rows = m.slice(0, 60); render(); }).catch((e) => fill(grid, h('p.error', e.message)));
   return () => {};
 }

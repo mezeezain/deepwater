@@ -4,7 +4,7 @@ import { demoSignalCandles } from '../demo-market.js';
 import { priceChart } from '../chart.js';
 import { getChartData } from '../api.js';
 import { marketLayers, whaleLayers, liquidationLevels, setupCheck } from '../indicators.js';
-import { h, ticker, fmtPrice, fmtPct, fmtUsd, signClass } from '../util.js';
+import { h, ticker, fmtPrice, fmtPct, fmtUsd, signClass, fill, riskNote } from '../util.js';
 import { realised, DEFAULTS } from '../engine.js';
 import { spotListed } from '../api.js';
 import { fmtDuration, fmtDip } from './pumps.js';
@@ -21,9 +21,10 @@ export function signalView(root, { id, go }) {
   const checks = h('div.checks-list', h('p.loading', 'Checking order flow…'));
   const spotNote = h('p.note');
 
-  root.replaceChildren(
+  fill(root, 
     h('button.back', { onclick: () => go('pumps') }, '← Pump catcher'),
     h('section.panel', head),
+    riskNote('An alert is a record of what the scanner saw, not a recommendation. '),
     tiles,
     h('div.split',
       h('section.panel.grow', h('h2', 'Price around the alert'), chartBox,
@@ -40,11 +41,11 @@ export function signalView(root, { id, go }) {
       const market = marketLayers(raw.bars);
       const items = setupCheck(raw.bars, market, whaleLayers(raw.bars), { levels: liquidationLevels(raw.bars, market).active });
       const icon = { good: '✓', warn: '!', bad: '✕', na: '–' };
-      checks.replaceChildren(...(items.length
+      fill(checks, ...(items.length
         ? items.map((it) => h(`div.check-item.${it.state}`, h('span.check-icon', { 'aria-hidden': 'true' }, icon[it.state]), h('div', h('strong', it.label), h('p', it.detail))))
         : [h('p.empty', 'Not enough data for a setup check.')]));
     } catch (e) {
-      checks.replaceChildren(h('p.empty', `Setup check unavailable: ${e.message}`));
+      fill(checks, h('p.empty', `Setup check unavailable: ${e.message}`));
     }
   }
 
@@ -52,7 +53,7 @@ export function signalView(root, { id, go }) {
     if (!alive) return;
     const sig = catcher.signals.find((s) => s.id === id);
     if (!sig) {
-      head.replaceChildren(h('p.error', 'This signal is no longer in your 30-day log. It may have been recorded in another browser.'));
+      fill(head, h('p.error', 'This signal is no longer in your 30-day log. It may have been recorded in another browser.'));
       return;
     }
     loadChecks(sig.symbol);
@@ -65,14 +66,14 @@ export function signalView(root, { id, go }) {
     });
     const paint = () => {
       const nowChg = ((sig.lastPrice - sig.alertPrice) / sig.alertPrice) * 100;
-      head.replaceChildren(
+      fill(head, 
         h('div',
           h('p.eyebrow', `Alert · ${new Date(sig.alertT).toLocaleString()}`),
           h('h1.token-title', ticker(sig.symbol), h(`span.status.${sig.status.toLowerCase()}`, sig.status === 'TRACKING' ? 'Tracking' : 'Closed'), sig.demo && h('span.chip.aligned', 'Example')),
         ),
         h('button.btn.ghost', { onclick: () => go('token', sig.symbol) }, `${ticker(sig.symbol)} positioning →`),
       );
-      tiles.replaceChildren(
+      fill(tiles, 
         tile('Alert price', fmtPrice(sig.alertPrice)),
         tile('Rise after alert', fmtPct(sig.rise), `peak ${fmtPrice(sig.peakPrice)} after ${fmtDuration(sig.peakT - sig.alertT)}`, signClass(sig.rise)),
         tile('Dip before peak', fmtDip(sig.dip), 'lowest point before the peak', sig.dip <= -0.05 ? 'down' : ''),
@@ -82,7 +83,7 @@ export function signalView(root, { id, go }) {
       );
       const cfg = catcher.cfg;
       const row = (label, value, ok) => h('div.fact-row', h('span', label), h(`strong.${ok == null ? '' : ok ? 'up' : 'down'}`, value));
-      why.replaceChildren(
+      fill(why, 
         row('Above 24h low', fmtPct(sig.riseFromLow), true),
         row('5-minute move', fmtPct(sig.impulse), true),
         row('Volume spike', sig.rvol == null ? '–' : `${sig.rvol.toFixed(1)}×`, sig.rvol >= cfg.minRvol),
@@ -104,7 +105,7 @@ export function signalView(root, { id, go }) {
       );
       const rules = sig.rules ?? cfg;
       const stop = sig.stopPct ?? rules.stopPct;
-      life.replaceChildren(
+      fill(life, 
         row('Stop', `${stop.toFixed(1)}% below alert (${fmtPrice(sig.alertPrice * (1 - stop / 100))})`),
         sig.range5m != null && row('Typical 5-minute range', `${sig.range5m.toFixed(2)}%`),
         row('Time to peak', fmtDuration(sig.peakT - sig.alertT)),
@@ -126,11 +127,11 @@ export function signalView(root, { id, go }) {
     try {
       candles = sig.demo ? demoSignalCandles(sig) : await catcher.source.getCandles(sig.symbol, interval, start);
     } catch (e) {
-      chartBox.replaceChildren(h('p.error', `Couldn't load candles. ${e.message}`));
+      fill(chartBox, h('p.error', `Couldn't load candles. ${e.message}`));
     }
     if (!alive || !candles) return;
     if (!candles.length) {
-      chartBox.replaceChildren(h('p.empty', 'No candles yet for this signal. The chart fills in as the demo market runs.'));
+      fill(chartBox, h('p.empty', 'No candles yet for this signal. The chart fills in as the demo market runs.'));
     } else {
       disposeChart = priceChart(chartBox, {
         candles,

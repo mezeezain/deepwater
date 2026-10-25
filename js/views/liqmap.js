@@ -3,7 +3,8 @@
 import { getChartData, getDepth, getSmartHistory } from '../api.js';
 import { pickCohort, summarize } from '../smartmoney.js';
 import { marketLayers, whaleLayers, whaleEntries, liquidationLevels, bucketLevels, findWalls, fmtCompact } from '../indicators.js';
-import { h, ticker, fmtPrice, cssVar, store, demoWatermark } from '../util.js';
+import { normalizePair } from '../route.js';
+import { h, ticker, toast, fmtPrice, cssVar, store, demoWatermark, fill, visibleInterval } from '../util.js';
 
 const INTERVALS = { '5m': 288, '15m': 288, '1h': 300 };
 const BUCKET_PCT = 0.25;
@@ -26,10 +27,11 @@ export function liqmapView(root, { symbol, go }) {
 
   const pairForm = h('form.pair-form', { onsubmit: (e) => {
     e.preventDefault();
-    const v = e.target.elements['liq-pair'].value.trim().toUpperCase();
-    if (v) go('liqmap', v.endsWith('USDT') ? v : v + 'USDT');
+    const v = normalizePair(e.target.elements['liq-pair'].value);
+    if (v) go('liqmap', v);
+    else toast('Type a ticker such as ETH or ETHUSDT.');
   } }, h('input#liq-pair.search', { name: 'liq-pair', placeholder: 'Pair, e.g. ETH', 'aria-label': 'Pair', value: ticker(symbol), autocomplete: 'off' }), h('button.btn', { type: 'submit' }, 'Open'));
-  const intervalBar = h('div.lenses', { role: 'tablist', 'aria-label': 'Candle interval' });
+  const intervalBar = h('div.lenses', { role: 'group', 'aria-label': 'Candle interval' });
   const box = h('div.liqmap');
   const canvas = h('canvas.chart-canvas', { role: 'img', 'aria-label': `${ticker(symbol)} estimated liquidation map with order book` });
   const tip = h('div.chart-tip');
@@ -47,7 +49,7 @@ export function liqmapView(root, { symbol, go }) {
   const walls = h('div');
   const stamp = h('p.note');
 
-  root.replaceChildren(
+  fill(root, 
     h('section.hero.compact',
       h('div.hero-text',
         h('p.eyebrow', 'Illustrative · estimated from open interest · order book live'),
@@ -75,7 +77,7 @@ export function liqmapView(root, { symbol, go }) {
   );
 
   function renderIntervals() {
-    intervalBar.replaceChildren(...Object.keys(INTERVALS).map((iv) => h('button.lens', { role: 'tab', 'aria-selected': String(iv === interval), onclick: () => {
+    fill(intervalBar, ...Object.keys(INTERVALS).map((iv) => h('button.lens', { type: 'button', 'aria-pressed': String(iv === interval), onclick: () => {
       interval = iv;
       store.set('liqmap-interval', iv);
       load();
@@ -365,7 +367,7 @@ export function liqmapView(root, { symbol, go }) {
     const below = buckets.filter((b) => b.price < last && b.long > 0).sort((a, b) => b.price - a.price);
     const top = (arr, key) => [...arr].sort((a, b) => b[key] - a[key]).slice(0, 4).sort((a, b) => Math.abs(a.price - last) - Math.abs(b.price - last));
     const row = (b, key, side) => h('li', h(`span.side-dot.${side}`), h('span.num', fmtPrice(b.price)), h('span.num.muted', `${(((b.price - last) / last) * 100).toFixed(1)}%`), h('span.num', usd(b[key])));
-    clusters.replaceChildren(
+    fill(clusters, 
       h('div.cluster-cols',
         h('div', h('h3', 'Above: shorts would be liquidated'), above.length ? h('ul.cluster-list', ...top(above, 'short').map((b) => row(b, 'short', 'ask'))) : h('p.empty', 'None estimated.')),
         h('div', h('h3', 'Below: longs would be liquidated'), below.length ? h('ul.cluster-list', ...top(below, 'long').map((b) => row(b, 'long', 'bid'))) : h('p.empty', 'None estimated.')),
@@ -376,11 +378,11 @@ export function liqmapView(root, { symbol, go }) {
   function renderWalls() {
     const list = (book?.walls || []).slice(0, 10).sort((a, b) => b.price - a.price);
     if (!list.length) {
-      walls.replaceChildren(h('p.empty', 'No unusually large orders in the book right now.'));
+      fill(walls, h('p.empty', 'No unusually large orders in the book right now.'));
       return;
     }
     const mins = (t) => Math.max(0, Math.round((Date.now() - t) / 60_000));
-    walls.replaceChildren(h('div.table-wrap', h('table.grid',
+    fill(walls, h('div.table-wrap', h('table.grid',
       h('thead', h('tr', h('th', { scope: 'col' }, 'Side'), h('th', { scope: 'col' }, 'Price'), h('th', { scope: 'col' }, 'Size'), h('th', { scope: 'col' }, 'vs typical'), h('th', { scope: 'col' }, 'Distance'), h('th', { scope: 'col' }, 'Resting'))),
       h('tbody', ...list.map((w) => h('tr.static',
         h('td', h(`span.${w.side === 'bid' ? 'up' : 'down'}`, w.side === 'bid' ? 'Bid' : 'Ask')),
@@ -397,8 +399,8 @@ export function liqmapView(root, { symbol, go }) {
   ro.observe(box);
   load();
   loadBook();
-  const bookTimer = setInterval(loadBook, 15_000);
-  const dataTimer = setInterval(load, 60_000);
+  const bookTimer = visibleInterval(loadBook, 15_000);
+  const dataTimer = visibleInterval(load, 60_000);
   return () => {
     alive = false;
     ro.disconnect();

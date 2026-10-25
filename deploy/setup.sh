@@ -2,8 +2,11 @@
 # One-step setup for the Deepwater servers on an Ubuntu VPS (tested target: Oracle Cloud Free Tier):
 # the whale data server (Binance Smart Money snapshots) and the pump catcher (shared signal log, Telegram).
 #
-# Run it on the server, logged in as the normal user (e.g. ubuntu):
-#   curl -fsSL https://raw.githubusercontent.com/mezeezain/deepwater/main/deploy/setup.sh | bash
+# Run it on the server, logged in as the normal user (e.g. ubuntu). Download it first so you can read
+# what it will do before it runs (it installs packages and opens firewall ports with sudo):
+#   curl -fsSLo setup.sh https://raw.githubusercontent.com/mezeezain/deepwater/main/deploy/setup.sh
+#   less setup.sh
+#   bash setup.sh
 #
 # It asks you to confirm the Binance terms warning, then for your DuckDNS subdomain and token (reused
 # on later runs), then:
@@ -133,7 +136,11 @@ User=$USER
 WorkingDirectory=$APP_DIR
 ExecStart=$(command -v node) worker/smartmoney.mjs
 Environment=PORT=$PORT
+Environment=HOST=127.0.0.1
 Environment=ALLOW_ORIGIN=$ORIGIN
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
 Restart=always
 RestartSec=10
 
@@ -198,6 +205,7 @@ if [ ! -f /etc/deepwater/catcher.env ]; then
   sudo tee /etc/deepwater/catcher.env >/dev/null <<ENVFILE
 # Pump catcher settings. Edit, then: sudo systemctl restart catcher
 CATCHER_PORT=$CATCHER_PORT
+HOST=127.0.0.1
 ALLOW_ORIGIN=$ORIGIN
 WHALE_SERVER=http://localhost:$PORT
 # Telegram alerts (optional). Posting alerts to a public channel can make them look like a
@@ -220,6 +228,9 @@ User=$USER
 WorkingDirectory=$APP_DIR
 EnvironmentFile=/etc/deepwater/catcher.env
 ExecStart=$(command -v node) worker/catcher.mjs
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
 Restart=always
 RestartSec=10
 
@@ -252,6 +263,11 @@ if ! command -v caddy >/dev/null; then
 fi
 sudo tee /etc/caddy/Caddyfile >/dev/null <<CADDY
 $DOMAIN {
+  header {
+    X-Content-Type-Options nosniff
+    Referrer-Policy no-referrer
+    -Server
+  }
   handle /api/catcher* {
     reverse_proxy localhost:$CATCHER_PORT
   }
@@ -284,6 +300,6 @@ else
   warn "HTTPS isn't answering yet. Most likely ports 80/443 aren't open in Oracle's security list,"
   warn "or DuckDNS hasn't updated yet. Fix that, then check: sudo journalctl -u caddy -n 30"
 fi
-printf '\nProbe result (send this to Claude):\n----------------------------------------\n'
+printf '\nProbe result (keep it in case you need to report a problem):\n----------------------------------------\n'
 head -c 4000 "$HOME/probe.txt"
 printf '\n----------------------------------------\n'

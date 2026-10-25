@@ -1,6 +1,6 @@
 // Stacked chart: candles on top, any number of indicator panes below, one shared time axis
 // and crosshair. Canvas only, no dependencies. Colours come from CSS tokens so both themes work.
-import { cssVar, fmtPrice, demoWatermark } from './util.js';
+import { cssVar, fmtPrice, demoWatermark, fill } from './util.js';
 
 const PRICE_H = 300;
 const PANE_H = 92;
@@ -18,7 +18,7 @@ export function multiChart(container, { bars, price = {}, panes = [], label = 'P
   canvas.className = 'chart-canvas';
   canvas.setAttribute('role', 'img');
   canvas.setAttribute('aria-label', label);
-  container.replaceChildren(canvas);
+  fill(container, canvas);
   container.style.height = PRICE_H + panes.length * (PANE_H + GAP) + 28 + 'px';
   let hover = -1;
 
@@ -34,7 +34,7 @@ export function multiChart(container, { bars, price = {}, panes = [], label = 'P
   }
 
   function draw() {
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2); // capped: a 3x canvas costs 2.25x the pixels for no visible gain
     const W = container.clientWidth;
     const H = container.clientHeight;
     if (!W || !H) return;

@@ -1,7 +1,7 @@
 // Pump catcher: alerts from every USDT perpetual, each tracked to a realised result.
 import { getCatcher, saveConfig, alertPrefs, beep, catcherMode, getBacktest } from '../catcher-app.js';
 import { DEFAULTS, stats, realised, configId } from '../engine.js';
-import { h, ticker, fmtPrice, fmtPct, fmtUsd, fmtAgo, signClass, csv, copyText, toast, store } from '../util.js';
+import { h, ticker, fmtPrice, fmtPct, fmtUsd, fmtAgo, signClass, csv, copyText, toast, store, fill, riskNote } from '../util.js';
 
 export const fmtDip = (d) => (d > -0.05 ? '0.0%' : fmtPct(d));
 
@@ -54,7 +54,7 @@ export function pumpsView(root, { go }) {
 
   const sourceLine = h('div.source-banner');
   const record = h('section.panel.record');
-  const tabs = h('div.lenses', { role: 'tablist', 'aria-label': 'Signals' });
+  const tabs = h('div.lenses', { role: 'group', 'aria-label': 'Signals' });
   const tableWrap = h('div.table-wrap');
   const more = h('button.btn.ghost', { onclick: () => ((showAll = !showAll), render()) });
   const near = h('div.near');
@@ -67,7 +67,8 @@ export function pumpsView(root, { go }) {
     settingsBtn.setAttribute('aria-expanded', String(!settings.hidden));
   } }, 'Settings');
 
-  root.replaceChildren(
+  fill(root, 
+    riskNote('Alerts are momentum scans, not recommendations; chasing a pump often means buying the top. '),
     h('section.hero',
       h('div.hero-text',
         h('p.eyebrow', 'Every USDT perpetual · checked every 5 seconds'),
@@ -108,13 +109,13 @@ export function pumpsView(root, { go }) {
     if (catcher.mode === 'shared') {
       const stale = catcher.error ? ` Server not answering (${catcher.error}); showing data from ${fmtAgo(catcher.receivedAt)}.` : '';
       sourceLine.dataset.state = catcher.error ? 'warn' : 'shared';
-      sourceLine.replaceChildren(
+      fill(sourceLine, 
         h('span', h('strong', 'Shared log. '), `Every device shows the same alerts, scanned around the clock on your server.${stale} `),
         h('button.link', { onclick: () => catcherMode.set('local') }, 'Scan in this browser instead'),
       );
     } else {
       sourceLine.dataset.state = catcher.demo ? 'demo' : 'local';
-      sourceLine.replaceChildren(
+      fill(sourceLine, 
         h('span', h('strong', 'This browser only. '), catcher.demo
           ? 'Demo mode: simulated market and invented history.'
           : 'Scanning runs only while this page is open, and the log is kept in this browser, so other devices show different alerts.'),
@@ -146,7 +147,7 @@ export function pumpsView(root, { go }) {
       editable && h('button.btn.ghost', { type: 'button', onclick: () => { saveConfig(catcher, DEFAULTS); renderSettings(); render(); toast('Settings reset to defaults'); } }, 'Reset to defaults'),
     );
     if (!editable) {
-      settings.replaceChildren(
+      fill(settings, 
         h('p.note', `The shared log uses your server’s settings (rule set ${catcher.cfgId}). Change them on the server with CATCHER_CONFIG; see the README.`),
         h('dl.kv.cfg-list', ...SETTINGS.map(([key, label, unit]) => h('div', h('dt', label), h('dd', `${cfg[key]} ${unit}`))),
           h('div', h('dt', 'Stop type'), h('dd', cfg.stopMode === 'vol' ? 'Volatility-based' : 'Fixed'))),
@@ -154,7 +155,7 @@ export function pumpsView(root, { go }) {
       );
       return;
     }
-    settings.replaceChildren(
+    fill(settings, 
       h('form.controls', { onsubmit: (e) => e.preventDefault() },
         ...SETTINGS.map(([key, label, unit, step]) =>
           h('label.field', h('span', `${label} (${unit})`),
@@ -192,12 +193,12 @@ export function pumpsView(root, { go }) {
     const pctOr = (v, digits = 0) => (v == null ? '–' : `${(v * 100).toFixed(digits)}%`);
     const tile = (label, value, sub, cls = '') => h('div.stat', h('span.stat-label', label), h(`span.stat-value${cls ? '.' + cls : ''}`, value), sub && h('span.stat-sub', sub));
     const small = st.closed < 20;
-    record.replaceChildren(
+    fill(record, 
       h('div.toolbar',
         h('h2', 'Track record'),
-        h('div.lenses', { role: 'tablist', 'aria-label': 'Which alerts' },
-          h('button.lens', { role: 'tab', 'aria-selected': String(scope === 'current'), onclick: () => { scope = 'current'; store.set('catcher-scope', scope); render(); } }, `Current rules · ${mine.length}`),
-          h('button.lens', { role: 'tab', 'aria-selected': String(scope === 'all'), onclick: () => { scope = 'all'; store.set('catcher-scope', scope); render(); } }, `All rules · ${all.length}`))),
+        h('div.lenses', { role: 'group', 'aria-label': 'Which alerts' },
+          h('button.lens', { type: 'button', 'aria-pressed': String(scope === 'current'), onclick: () => { scope = 'current'; store.set('catcher-scope', scope); render(); } }, `Current rules · ${mine.length}`),
+          h('button.lens', { type: 'button', 'aria-pressed': String(scope === 'all'), onclick: () => { scope = 'all'; store.set('catcher-scope', scope); render(); } }, `All rules · ${all.length}`))),
       h('div.summary',
         tile('Closed signals', st.closed, `${st.tracking} still open`),
         tile('Win rate', pctOr(st.winRate), 'closed, after costs'),
@@ -227,9 +228,9 @@ export function pumpsView(root, { go }) {
       : catcher.state === 'reconnecting' ? 'Reconnecting to Binance…' : 'Starting…';
     pulse.dataset.state = catcher.mode === 'shared' ? (catcher.error ? 'reconnecting' : 'live') : catcher.state;
 
-    tabs.replaceChildren(...TABS.map((t) => h('button.lens', {
-      role: 'tab',
-      'aria-selected': String(t.id === tab),
+    fill(tabs, ...TABS.map((t) => h('button.lens', {
+      type: 'button',
+      'aria-pressed': String(t.id === tab),
       onclick: () => { tab = t.id; store.set('catcher-tab', tab); render(); },
     }, `${t.label} ${all.filter(t.filter).length}`)));
 
@@ -246,7 +247,7 @@ export function pumpsView(root, { go }) {
     const th = (key, label, title) => h('th', { scope: 'col', title: title || '', 'aria-sort': sort.key === key ? (sort.dir > 0 ? 'ascending' : 'descending') : 'none' },
       key ? h('button.th-btn', { onclick: () => { sort = { key, dir: sort.key === key ? -sort.dir : -1 }; render(); } }, label, sort.key === key ? (sort.dir > 0 ? ' ↑' : ' ↓') : '') : label);
 
-    tableWrap.replaceChildren(h('table.grid.signals',
+    fill(tableWrap, h('table.grid.signals',
       h('thead', h('tr',
         th('alertT', 'Alerted'),
         th('symbol', 'Pair'),
@@ -301,10 +302,10 @@ export function pumpsView(root, { go }) {
   function renderNear() {
     const list = catcher.nearMisses().slice(0, 12);
     if (!list.length) {
-      near.replaceChildren(h('p.empty', 'Nothing is lifting off its low right now.'));
+      fill(near, h('p.empty', 'Nothing is lifting off its low right now.'));
       return;
     }
-    near.replaceChildren(h('ul.near-list', ...list.map((c) =>
+    fill(near, h('ul.near-list', ...list.map((c) =>
       h('li',
         h('button.near-pair', { onclick: () => go('token', c.symbol) }, h('span.pair-name', ticker(c.symbol))),
         h('span.num', `${fmtPct(c.screen.rise)} off low`),
@@ -340,7 +341,7 @@ export function pumpsView(root, { go }) {
     const bt = await getBacktest();
     if (!alive) return;
     if (!bt?.test) {
-      backtestBox.replaceChildren(h('p.note', 'No backtest has been run yet. Until one shows a positive result after costs on data it wasn’t tuned on, treat this page as a positioning dashboard, not a signal service. Run tools/backtest.mjs on your server to replay the engine over Binance’s last 30 days.'));
+      fill(backtestBox, h('p.note', 'No backtest has been run yet. Until one shows a positive result after costs on data it wasn’t tuned on, treat this page as a positioning dashboard, not a signal service. Run tools/backtest.mjs on your server to replay the engine over Binance’s last 30 days.'));
       return;
     }
     const line = (label, r) => h('tr.static',
@@ -349,7 +350,7 @@ export function pumpsView(root, { go }) {
       h('td.num', r.winRate == null ? '–' : `${Math.round(r.winRate * 100)}%`),
       h(`td.num.${signClass(r.expectancy)}`, r.expectancy == null ? '–' : fmtPct(r.expectancy, 2)),
       h('td.num', r.stopped == null ? '–' : `${Math.round(r.stopped * 100)}%`));
-    backtestBox.replaceChildren(
+    fill(backtestBox, 
       h('p.note', `Run ${new Date(bt.ranAt).toLocaleString()} on ${bt.pairs} pairs, ${bt.days} days of Binance data, ${bt.costPct}% costs. Tuned on the first ${bt.trainDays} days, then tested on the last ${bt.testDays} days, which the tuning never saw.`),
       h('div.table-wrap', h('table.grid',
         h('thead', h('tr', ...['Period', 'Signals', 'Win rate', 'Expectancy', 'Hit stop'].map((t) => h('th', { scope: 'col' }, t)))),
@@ -409,7 +410,7 @@ export function pumpsView(root, { go }) {
     }));
     render();
     renderBacktest();
-  }).catch((e) => tableWrap.replaceChildren(h('p.error', `The scanner couldn't start. ${e.message}`)));
+  }).catch((e) => fill(tableWrap, h('p.error', `The scanner couldn't start. ${e.message}`)));
 
   return () => {
     alive = false;

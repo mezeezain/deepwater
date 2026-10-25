@@ -3,7 +3,7 @@ import { getMarket, getChartData, getSmartHistory, CHART_INTERVALS } from '../ap
 import { alignToBars, pickCohort, summarize } from '../smartmoney.js';
 import { multiChart } from '../multichart.js';
 import { marketLayers, whaleLayers, whaleEntries, liquidationLevels, setupCheck, fmtCompact } from '../indicators.js';
-import { h, ticker, fmtPrice, fmtPct, fmtUsd, signClass, shareBar, watchlist, store } from '../util.js';
+import { h, ticker, fmtPrice, fmtPct, fmtUsd, signClass, shareBar, watchlist, store, fill } from '../util.js';
 
 const usd = (v) => `${v < 0 ? '-' : ''}$${fmtCompact(Math.abs(v))}`;
 const share = (v) => `${Math.round(v * 100)}%`;
@@ -25,9 +25,13 @@ export const LAYERS = [
 ];
 const DEFAULT_LAYERS = ['gap', 'shift', 'flow', 'cvd', 'oi', 'entries', 'absorb'];
 
-export function tokenView(root, { symbol, go }) {
-  let interval = store.get('chart-interval', '1h');
-  let layers = new Set(store.get('chart-layers', DEFAULT_LAYERS));
+export function tokenView(root, { symbol, go, params = {}, setParams = () => {} }) {
+  // Chart state can ride in the address (#SOLUSDT?i=4h&l=gap,cvd) so a view can be shared; saved settings are the fallback.
+  const validLayers = new Set(LAYERS.map((l) => l.id));
+  let interval = Object.hasOwn(CHART_INTERVALS, params.i) ? params.i : store.get('chart-interval', '1h');
+  const fromUrl = (params.l || '').split(',').filter((id) => validLayers.has(id));
+  let layers = new Set(fromUrl.length ? fromUrl : store.get('chart-layers', DEFAULT_LAYERS));
+  const shareState = () => setParams({ i: interval, l: [...layers].join(',') });
   let data = null;
   let disposeChart = () => {};
   let alive = true;
@@ -42,7 +46,7 @@ export function tokenView(root, { symbol, go }) {
   paintStar();
 
   const head = h('div.token-head');
-  const intervalBar = h('div.lenses', { role: 'tablist', 'aria-label': 'Candle interval' });
+  const intervalBar = h('div.lenses', { role: 'group', 'aria-label': 'Candle interval' });
   const layerBar = h('div.layer-bar');
   const chartBox = h('div.chart.multi');
   const freshness = h('p.note.freshness');
@@ -53,9 +57,9 @@ export function tokenView(root, { symbol, go }) {
   const smartBox = h('div.smart-box');
   const sourceTag = h('span.source-tag');
 
-  root.replaceChildren(
+  fill(root, 
     h('button.back', { onclick: () => go('whales') }, '← All pairs'),
-    h('section.panel', h('div.token-top', head, h('div.toolbar-right', h('button.btn.ghost', { onclick: () => go('liqmap', symbol) }, 'Liquidation map →'), starBtn))),
+    h('section.panel', h('div.token-top', head, h('div.toolbar-right', h('a.btn.ghost', { href: `https://www.tradingview.com/chart/?symbol=BINANCE:${symbol}.P`, target: '_blank', rel: 'noopener noreferrer' }, 'TradingView ↗'), h('button.btn.ghost', { onclick: () => go('liqmap', symbol) }, 'Liquidation map →'), starBtn))),
     h('section.panel', h('div.toolbar', h('div.title-row', h('h2', 'Chart'), sourceTag), intervalBar), layerBar, chartBox, freshness),
     h('section.panel', h('h2', 'Smart money positions'), smartBox),
     h('div.split',
@@ -69,19 +73,21 @@ export function tokenView(root, { symbol, go }) {
   );
 
   function renderControls() {
-    intervalBar.replaceChildren(...Object.keys(CHART_INTERVALS).map((iv) =>
-      h('button.lens', { role: 'tab', 'aria-selected': String(iv === interval), onclick: () => {
+    fill(intervalBar, ...Object.keys(CHART_INTERVALS).map((iv) =>
+      h('button.lens', { type: 'button', 'aria-pressed': String(iv === interval), onclick: () => {
         interval = iv;
         store.set('chart-interval', iv);
+        shareState();
         load();
       } }, iv)));
     const groups = [...new Set(LAYERS.map((l) => l.group))];
-    layerBar.replaceChildren(...groups.map((g) => h('div.layer-group',
+    fill(layerBar, ...groups.map((g) => h('div.layer-group',
       h('span.layer-group-label', g),
       ...LAYERS.filter((l) => l.group === g).map((l) =>
         h('button.layer', { 'aria-pressed': String(layers.has(l.id)), title: l.hint, onclick: () => {
           layers.has(l.id) ? layers.delete(l.id) : layers.add(l.id);
           store.set('chart-layers', [...layers]);
+          shareState();
           renderControls();
           renderChart();
         } }, l.label)))));
@@ -91,10 +97,10 @@ export function tokenView(root, { symbol, go }) {
     const market = await getMarket();
     const m = market.find((x) => x.symbol === symbol);
     if (!m) {
-      head.replaceChildren(h('h1', ticker(symbol)), h('p.error', `${symbol} isn't a trading USDT perpetual on Binance. Check the ticker and try again.`));
+      fill(head, h('h1', ticker(symbol)), h('p.error', `${symbol} isn't a trading USDT perpetual on Binance. Check the ticker and try again.`));
       return null;
     }
-    head.replaceChildren(
+    fill(head, 
       h('div',
         h('p.eyebrow', `${symbol} · perpetual`),
         h('h1.token-title', ticker(symbol), h('span.token-price', fmtPrice(m.price)), h(`span.token-chg.${signClass(m.change24h)}`, fmtPct(m.change24h))),
@@ -111,7 +117,7 @@ export function tokenView(root, { symbol, go }) {
   async function load() {
     renderControls();
     chartBox.style.height = '';
-    chartBox.replaceChildren(h('p.loading', 'Loading chart…'));
+    fill(chartBox, h('p.loading', 'Loading chart…'));
     try {
       const [raw, smartHist] = await Promise.all([
         getChartData(symbol, interval, 300),
@@ -119,7 +125,7 @@ export function tokenView(root, { symbol, go }) {
       ]);
       if (!alive) return;
       if (raw.bars.length < 20) {
-        chartBox.replaceChildren(h('p.empty', 'Not enough history for this pair yet.'));
+        fill(chartBox, h('p.empty', 'Not enough history for this pair yet.'));
         return;
       }
       const market = marketLayers(raw.bars);
@@ -145,7 +151,7 @@ export function tokenView(root, { symbol, go }) {
       renderMoves();
       renderFunding();
     } catch (e) {
-      chartBox.replaceChildren(h('p.error', `Couldn't load the chart. ${e.message}`));
+      fill(chartBox, h('p.error', `Couldn't load the chart. ${e.message}`));
     }
   }
 
@@ -257,7 +263,7 @@ export function tokenView(root, { symbol, go }) {
       whaleName: ex ? 'Whales' : 'Top 20% accounts',
     });
     const icon = { good: '✓', warn: '!', bad: '✕', na: '–' };
-    checks.replaceChildren(...(items.length
+    fill(checks, ...(items.length
       ? items.map((it) => h(`div.check-item.${it.state}`, h('span.check-icon', { 'aria-hidden': 'true' }, icon[it.state]), h('div', h('strong', it.label), h('p', it.detail))))
       : [h('p.empty', 'Not enough data for a setup check.')]));
   }
@@ -269,7 +275,7 @@ export function tokenView(root, { symbol, go }) {
     const recentLiq = m.slice(-24).filter((x) => x.liq);
     const { entries } = data;
     const row = (label, value, cls = '') => h('div.fact-row', h('span', label), h(`strong.${cls}`, value));
-    facts.replaceChildren(
+    fill(facts, 
       ...(data.exact?.latest?.longShare != null
         ? [h('div.fact', h('span.fact-label', `${data.exact.latest.cohort === 'smart' ? 'Smart money' : 'Whales'} (Binance Smart Money, by size)`), shareBar(data.exact.latest.longShare, 'Whales'))]
         : []),
@@ -297,10 +303,10 @@ export function tokenView(root, { symbol, go }) {
     const big = whales.map((w, i) => ({ ...w, price: bars[i].c })).filter((w) => (data.exact || !w.rosterChange) && w.shift)
       .sort((a, b) => Math.abs(b.shift) - Math.abs(a.shift)).slice(0, 8).sort((a, b) => b.t - a.t);
     if (!big.length) {
-      moves.replaceChildren(h('p.empty', data.exact ? 'No whale moves recorded in this window yet.' : 'No whale data for this pair.'));
+      fill(moves, h('p.empty', data.exact ? 'No whale moves recorded in this window yet.' : 'No whale data for this pair.'));
       return;
     }
-    moves.replaceChildren(h('ol.move-list', ...big.map((b) =>
+    fill(moves, h('ol.move-list', ...big.map((b) =>
       h('li',
         h(`span.move-dir.${b.shift > 0 ? 'up' : 'down'}`, b.shift > 0 ? 'Toward long' : 'Toward short'),
         h('span.move-size', `${b.shift > 0 ? '+' : ''}${usd(b.shift)}${b.opensLong || b.opensShort ? ` · opened ${b.opensLong >= b.opensShort ? 'longs ' + usd(b.opensLong) : 'shorts ' + usd(b.opensShort)}` : ' · closing only'}`),
@@ -325,7 +331,7 @@ export function tokenView(root, { symbol, go }) {
   function renderSmart() {
     const ex = data.exact;
     if (!ex) {
-      smartBox.replaceChildren(h('p.note', data.smartError
+      fill(smartBox, h('p.note', data.smartError
         ? `Your whale data server couldn't be reached (${data.smartError}). Whale layers above are estimates.`
         : "No exact whale data for this pair. Whale layers above are estimated from Binance's top-trader ratio. To get exact positions, average entries and PnL, run the whale data server (worker/smartmoney.mjs) and connect it on the Whales page."));
       return;
@@ -358,7 +364,7 @@ export function tokenView(root, { symbol, go }) {
     const fallback = ex.latest.cohort === 'smart';
     const ageH = (Date.now() - ex.t) / 3_600_000;
     const age = ageH < 1 ? `${Math.max(1, Math.round(ageH * 60))} minutes ago` : ageH < 48 ? `${ageH.toFixed(1)} hours ago` : `${Math.round(ageH / 24)} days ago`;
-    smartBox.replaceChildren(
+    fill(smartBox, 
       h('p.note', `${ex.source === 'demo' ? 'Simulated data (demo). ' : ''}Binance last recalculated these positions ${age} (${new Date(ex.t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}). Value and unrealized PnL use the current price. "All smart money" includes the whales.${fallback ? ' Fewer than 10 whales hold this pair, so the chart uses all smart money.' : ''}`),
       h('div.table-wrap', h('table.grid.smart-table',
         h('thead', h('tr', ...['Group', 'Traders', 'Size', 'Value', 'Avg entry (vs price)', 'Unrealized PnL', 'In profit'].map((t) => h('th', { scope: 'col' }, t)))),
@@ -371,12 +377,12 @@ export function tokenView(root, { symbol, go }) {
   function renderFunding() {
     const hist = data.funding.slice(-30);
     if (!hist.length) {
-      funding.replaceChildren(h('p.empty', 'Funding history is unavailable.'));
+      fill(funding, h('p.empty', 'Funding history is unavailable.'));
       return;
     }
     const max = Math.max(...hist.map((x) => Math.abs(x.rate)), 1e-6);
     const mean = hist.reduce((s, x) => s + x.rate, 0) / hist.length;
-    funding.replaceChildren(
+    fill(funding, 
       h('div.fbars', ...hist.map((f) => h(`span.fbar.${f.rate >= 0 ? 'up' : 'down'}`, {
         style: { '--h': Math.abs(f.rate) / max },
         title: `${new Date(f.t).toLocaleString()}: ${(f.rate * 100).toFixed(4)}%`,
@@ -386,7 +392,7 @@ export function tokenView(root, { symbol, go }) {
   }
 
   renderControls();
-  loadHead().then((m) => m && load()).catch((e) => head.replaceChildren(h('p.error', e.message)));
+  loadHead().then((m) => m && load()).catch((e) => fill(head, h('p.error', e.message)));
 
   return () => {
     alive = false;

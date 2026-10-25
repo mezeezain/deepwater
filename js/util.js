@@ -34,6 +34,21 @@ export function h(tag, props, ...children) {
   return el;
 }
 
+/** replaceChildren that drops null, undefined and false, which the native method would print as text ("null"). */
+export function fill(el, ...children) {
+  el.replaceChildren(...children.flat(Infinity).filter((c) => c != null && c !== false && c !== true));
+}
+
+/** setInterval that skips ticks while the tab is hidden, so background tabs stop hitting the API. Clear it with clearInterval. */
+export function visibleInterval(fn, ms) {
+  return setInterval(() => { if (!document.hidden) fn(); }, ms);
+}
+
+/** Short risk reminder shown on every screen that reads like a trade signal. */
+export function riskNote(extra = '') {
+  return h('p.risk-note', { role: 'note' }, h('strong', 'Not financial advice. '), 'Leveraged futures can lose more than your margin. ' + extra + 'Past results do not predict future ones. ', h('a', { href: '#guide' }, 'How to read this'));
+}
+
 export const ticker = (symbol) => symbol.replace(/USDT$/, '');
 
 export function fmtPrice(p) {
@@ -133,6 +148,11 @@ export async function copyText(text) {
   } catch {
     return false;
   }
+}
+
+/** A real link to a pair's page, so table rows are reachable and announced as links (the row stays clickable for mouse users). */
+export function pairLink(symbol, ...extra) {
+  return h('a.pair-link', { href: '#' + symbol, onclick: (e) => e.stopPropagation() }, h('span.pair-name', ticker(symbol)), ...extra);
 }
 
 export function toast(msg) {

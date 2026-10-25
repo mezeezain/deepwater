@@ -27,23 +27,44 @@ export function createBinanceSource({ get }) {
       let ws;
       let stopped = false;
       let retry;
+      let delay = 3000; // doubles on each failed attempt, up to 60 s, so a Binance outage isn't hammered
+      let watchdog;
+      let lastMsg = Date.now();
       const connect = () => {
         ws = new WebSocket(`${WS}/!ticker@arr`);
         ws.onopen = () => onState('open');
         ws.onmessage = (msg) => {
-          const rows = JSON.parse(typeof msg.data === 'string' ? msg.data : msg.data.toString());
+          lastMsg = Date.now();
+          delay = 3000;
+          let rows;
+          try {
+            rows = JSON.parse(typeof msg.data === 'string' ? msg.data : msg.data.toString());
+          } catch {
+            return;
+          }
           onBatch(rows.filter((r) => universe.has(r.s)).map(fromStream));
         };
         ws.onclose = () => {
           onState('closed');
-          if (!stopped) retry = setTimeout(connect, 3000);
+          if (!stopped) {
+            retry = setTimeout(connect, delay);
+            delay = Math.min(delay * 2, 60_000);
+          }
         };
         ws.onerror = () => ws.close();
       };
       connect();
+      // The all-market stream ticks about once a second; silence for 30 s means a dead socket that never closed.
+      watchdog = setInterval(() => {
+        if (!stopped && Date.now() - lastMsg > 30_000 && ws?.readyState === 1) {
+          lastMsg = Date.now();
+          ws.close();
+        }
+      }, 10_000);
       return () => {
         stopped = true;
         clearTimeout(retry);
+        clearInterval(watchdog);
         ws?.close();
       };
     },

@@ -1,13 +1,13 @@
 // Small canvas chart: candles or a line on top, optional percentage lines in a lower pane.
 // Redraws on resize and theme change. No dependencies.
-import { cssVar, fmtPrice, demoWatermark } from './util.js';
+import { cssVar, fmtPrice, demoWatermark, fill } from './util.js';
 
 export function priceChart(container, { candles, overlays = [], markers = [], levels = [], label = 'Price chart with whale and crowd long share' }) {
   const canvas = document.createElement('canvas');
   canvas.className = 'chart-canvas';
   canvas.setAttribute('role', 'img');
   canvas.setAttribute('aria-label', label);
-  container.replaceChildren(canvas);
+  fill(container, canvas);
   const tip = document.createElement('div');
   tip.className = 'chart-tip';
   tip.hidden = true;
@@ -16,7 +16,7 @@ export function priceChart(container, { candles, overlays = [], markers = [], le
   let hover = -1;
 
   function draw() {
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2); // capped: a 3x canvas costs 2.25x the pixels for no visible gain
     const W = container.clientWidth;
     const H = container.clientHeight;
     canvas.width = W * dpr;
