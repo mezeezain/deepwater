@@ -207,3 +207,56 @@ document.addEventListener('catcher-alert', (e) => {
 
 window.addEventListener('hashchange', render);
 ensureMode().then(render);
+
+// ---- Light / dark toggle ----
+(function initTheme() {
+  const btn = document.getElementById('theme-toggle');
+  if (!btn) return;
+  const mq = matchMedia('(prefers-color-scheme: dark)');
+  const isDark = () => {
+    const t = document.documentElement.getAttribute('data-theme');
+    return t ? t === 'dark' : mq.matches;
+  };
+  const ns = 'http://www.w3.org/2000/svg';
+  const icon = (dark) => {
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '20');
+    svg.setAttribute('height', '20');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    const p = (tag, attrs) => {
+      const e = document.createElementNS(ns, tag);
+      for (const k in attrs) e.setAttribute(k, attrs[k]);
+      svg.append(e);
+    };
+    if (dark) {
+      // currently dark -> show sun (switch to light)
+      p('circle', { cx: 12, cy: 12, r: 4 });
+      p('path', { d: 'M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4' });
+    } else {
+      p('path', { d: 'M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z' });
+    }
+    return svg;
+  };
+  const render = () => {
+    const dark = isDark();
+    btn.replaceChildren(icon(dark));
+    btn.setAttribute('aria-label', dark ? 'Switch to light mode' : 'Switch to dark mode');
+    btn.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', dark ? '#0a1215' : '#0b6e6a');
+  };
+  btn.addEventListener('click', () => {
+    const next = isDark() ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem('dw-theme', next); } catch (e) { /* ignore */ }
+    render();
+  });
+  mq.addEventListener('change', render);
+  render();
+})();

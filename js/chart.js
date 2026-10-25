@@ -207,8 +207,11 @@ export function priceChart(container, { candles, overlays = [], markers = [], le
   ro.observe(container);
   const mq = matchMedia('(prefers-color-scheme: dark)');
   mq.addEventListener('change', draw);
+  const themeObs = new MutationObserver(draw);
+  themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   return () => {
     ro.disconnect();
+    themeObs.disconnect();
     mq.removeEventListener('change', draw);
   };
 }

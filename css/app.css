@@ -83,6 +83,13 @@ button, input, select { font: inherit; color: inherit; }
   #jump { margin-left: auto; }
   #jump-input { width: 120px; }
 }
+.theme-toggle {
+  display: inline-grid; place-items: center; width: 40px; height: 40px; flex: none;
+  border: 1px solid var(--line); border-radius: 10px; background: transparent;
+  color: var(--fg); cursor: pointer;
+}
+.theme-toggle:hover { background: var(--raised); }
+.theme-toggle:focus-visible { outline: 2px solid var(--accent, #3cc3bb); outline-offset: 2px; }
 
 /* Status strip */
 #status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); padding-block: 8px; }
