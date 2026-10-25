@@ -124,11 +124,11 @@ API: `GET /api/health` (thin and public; add `?detail=1` on the machine itself f
 
 A pair has to pass three gates before it fires:
 
-1. **Lift-off.** Price has just crossed **+27% off its rolling 24h low** (1.27× the low; the band is 27–30%, so the 5-second scan fires on the first crossing) and is no more than 20% below its 24h high. The last condition separates a breakout from a bounce after a drop. This matches PumpGlass's trigger: on its published alerts, alert price ÷ start price is 1.2700–1.2734 every time. A minimum 5-minute move can be set in Settings (off by default).
+1. **Lift-off.** Price has just crossed **+27% off its rolling 24h low** (1.27× the low) and is no more than 5% below its 24h high. "Just crossed" is enforced: five minutes earlier the pair must still have been below +27%, so a pump that peaked higher and is sliding back through the band doesn't fire. The band runs to +40%, so a thin coin that jumps from +25% to +35% between two 5-second samples still alerts. The 24h-high condition separates a fresh breakout from a rebound after a bigger peak. Both rules can be relaxed in Settings. This matches PumpGlass's trigger: on its published alerts, alert price ÷ start price is 1.2700–1.2734 every time. A minimum 5-minute move can be set in Settings (off by default).
 2. **Order flow.** Volume over the last 5 minutes is at least 2.5× the recent average (average per minute × 5), taker buys are at least 56% of volume, and **real-time** open interest is up at least 1.5% on its level 15 minutes earlier.
 3. **Positioning.** Binance's top 20% of accounts are more than 5 points longer than all accounts, or all accounts are under 40% long. This gate can be switched off.
 
-**Exits and results.** Each signal closes at its stop, after giving back 45% of a gain over 8%, or after 72 hours. The stop is a fixed 7% by default, or optionally a volatility-based stop: 3× the pair's typical 5-minute range, kept within 3–12%. The **exit price is stored**, and the track record reports **realised** results after an assumed 0.15% round-trip cost:
+**Exits and results.** Each signal closes at its stop, after giving back 45% of a gain over 8%, or after 72 hours. The stop is a fixed 7% by default, or optionally a volatility-based stop: 3× the pair's typical 5-minute range, kept within 3–12%. The **exit price is stored**, and the track record reports **realised** results after an assumed 0.3% round-trip cost (fees and slippage; funding paid while holding is not included for live signals), each with a 95% range because a few dozen signals say little:
 - win rate, average win and average loss;
 - **expectancy** per signal;
 - how often the stop was hit.
@@ -142,7 +142,7 @@ The best price reached ("peak") is still shown, but labelled as the best case. O
 - the distance to their average long and short entries;
 - whether their shorts are losing money there (squeeze fuel).
 
-This is context, not part of the trigger. An optional filter, off by default, skips alerts where whales lean short and their shorts aren't losing.
+This is context, not part of the trigger. An optional filter, off by default, skips alerts where whales lean short. ("Their shorts are losing" is shown but no longer counts as agreement: after a +27% run almost every earlier short is under water, so it passed nearly everything.)
 
 ### Shared signal log
 
@@ -153,7 +153,8 @@ The site's default server is `DEFAULT_WHALE_SERVER` in `js/api.js`. Change it if
 ### Backtest
 
 `tools/backtest.mjs` replays the exact engine over Binance's recent history:
-- the most traded pairs, 29 days plus a day of warm-up;
+- the most traded pairs (ranked by volume on the **first day** of the window, not today, so current pumpers aren't favoured; `--pairs all` uses every pair that was trading; coins delisted since are not in Binance's list), 29 days plus a day of warm-up;
+- funding paid while each signal was open, charged to it;
 - 1-minute candles, and 5-minute open interest and long/short ratios.
 
 It tunes a small grid of settings on the first 19 days, then tests the chosen settings on the last 10 days, which the tuning never saw, after costs:
@@ -165,7 +166,9 @@ node tools/backtest.mjs --demo       # synthetic data, checks the tool runs
 
 The report goes to `worker/data/backtest.json`. The pump catcher server publishes it at `/api/backtest`, and the Pump catcher page shows it. The setup script runs it every Sunday.
 
-A replay differs from live scanning: it compares 5-minute open interest snapshots, fires at minute closes, has no Smart Money filter (Binance keeps no history), and assumes green candles hit their low before their high. Treat its numbers as an upper bound. Until the test period shows a positive expectancy after costs, treat this as a positioning dashboard, not a signal service.
+The report is built to resist flattering itself: the first pre-filter uses the lowest trigger values in play (so the default rules are tested as they run live); positioning is read one 5-minute slot late (safe whichever end of the period Binance's timestamp marks) and the open-interest baseline is the snapshot nearest 15 minutes back, as live; signals alerted in the last 72 hours of data are left out rather than counted only if they closed early; stops fill at the stop price minus a slippage allowance rather than at the candle low; the chosen rule set is shown beside the **median and spread of all 54**, a **walk-forward** result (tune before each split, test after), and bootstrap 95% ranges.
+
+A replay still differs from live scanning: it fires at minute closes, has no Smart Money filter (Binance keeps no history), and assumes green candles hit their low before their high. Treat its numbers as an upper bound. Rule of thumb: if the unseen-period result is not positive at 0.3% costs over 50+ closed signals, rethink the trigger rather than tune it. Until the test period shows a positive expectancy after costs, treat this as a positioning dashboard, not a signal service.
 
 ### Background worker with Telegram alerts
 

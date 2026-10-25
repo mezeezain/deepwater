@@ -2,6 +2,7 @@
 // so it runs unchanged in the browser and in Node 22+ (worker/catcher.mjs).
 // `get(path, params)` is injected so each side can add its own caching and rate limiting.
 
+import { nearestRow } from './engine.js';
 export const REST = 'https://fapi.binance.com';
 export const WS = 'wss://fstream.binance.com/ws';
 
@@ -80,7 +81,7 @@ export function createBinanceSource({ get }) {
       const [klines, oiNow, oi, whales, crowd] = await Promise.all([
         get('/fapi/v1/klines', { symbol, interval: '1m', limit: 35 }),
         get('/fapi/v1/openInterest', { symbol }),
-        get('/futures/data/openInterestHist', { symbol, period: '5m', limit: 4 }),
+        get('/futures/data/openInterestHist', { symbol, period: '5m', limit: 5 }),
         get('/futures/data/topLongShortPositionRatio', { symbol, period: '5m', limit: 1 }),
         get('/futures/data/globalLongShortAccountRatio', { symbol, period: '5m', limit: 1 }),
       ]);
@@ -88,7 +89,10 @@ export function createBinanceSource({ get }) {
       const closed = klines.filter((k) => +k[6] < Date.now());
       // Real-time open interest now, against the 5-minute history point about 15 minutes back.
       // (The history's newest point can be several minutes old, which would miss a move that just started.)
-      const oiFirst = oi.length ? +oi[0].sumOpenInterest : null;
+      // The baseline is the history point closest to 15 minutes ago by timestamp, so 1.5% means the same thing
+      // whether the newest history row is two minutes old or seven (the backtest picks it the same way).
+      const base = nearestRow(oi, Date.now() - 15 * 60_000);
+      const oiFirst = base ? +base.sumOpenInterest : null;
       const oiLast = oiNow?.openInterest != null ? +oiNow.openInterest : oi.length ? +oi[oi.length - 1].sumOpenInterest : null;
       return {
         klines: closed,

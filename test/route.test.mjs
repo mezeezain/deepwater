@@ -56,3 +56,16 @@ test('normalizePair', () => {
   assert.equal(normalizePair(''), null);
   assert.equal(normalizePair('a$b'), null);
 });
+
+import { validOverviewRow, validPositioningRow } from '../js/api.js';
+test('server rows are range-checked before use', () => {
+  assert.ok(validOverviewRow({ symbol: 'BTCUSDT', shown: { longShare: 0.4 } }));
+  assert.ok(validOverviewRow({ symbol: 'BTCUSDT', shown: {} }));
+  assert.equal(validOverviewRow({ symbol: 'BTCUSDT', shown: { longShare: 7 } }), false);
+  assert.equal(validOverviewRow({ symbol: 'btc', shown: {} }), false);
+  assert.equal(validOverviewRow(null), false);
+  const s = [{ t: 1, long: 0.5 }];
+  assert.ok(validPositioningRow({ symbol: 'ETHUSDT', whales: s, smart: s, crowd: s, oi: [{ t: 1, value: 5 }] }));
+  assert.equal(validPositioningRow({ symbol: 'ETHUSDT', whales: [{ t: 1, long: 9 }], smart: s, crowd: s, oi: [] }), false);
+  assert.equal(validPositioningRow({ symbol: 'ETHUSDT', whales: [], smart: s, crowd: s, oi: [] }), false);
+});

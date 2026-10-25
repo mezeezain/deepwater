@@ -3,8 +3,14 @@
 // Tunes on the first part of the period and tests on the rest, which the tuning never saw.
 // Node 22+, no dependencies. Run it where Binance is reachable (e.g. your whale data server).
 //
-//   node tools/backtest.mjs                      # top 40 pairs, 29 days (+1 day warm-up), tune 19 / test 10
+//   node tools/backtest.mjs                      # 40 pairs, 29 days (+1 day warm-up), tune 19 / test 10
 //   node tools/backtest.mjs --pairs 80 --train 15
+//   node tools/backtest.mjs --pairs all          # every perpetual that was trading at the start (about 3x longer)
+//   node tools/backtest.mjs --cost 0.5           # assumed round-trip cost, % (default 0.3)
+//
+// Pairs are ranked by their volume on the first day of the window, not today, so coins that are pumping now
+// are not favoured. Coins delisted since the window began are not in Binance's list and cannot be included.
+// Funding paid while a signal was open is charged to it.
 //   node tools/backtest.mjs --demo               # synthetic data, no network (checks the tool runs)
 //
 // Writes worker/data/backtest.json (or --out), which the pump catcher worker serves at /api/backtest.
@@ -20,7 +26,10 @@ const arg = (name, fallback) => {
   return i > 0 ? process.argv[i + 1] : fallback;
 };
 const demo = process.argv.includes('--demo');
-const PAIRS = +arg('pairs', 40);
+const PAIRS_ARG = arg('pairs', '40');
+const PAIRS = PAIRS_ARG === 'all' ? Infinity : +PAIRS_ARG;
+const COST = +arg('cost', DEFAULTS.costPct);
+const STEP = +arg('step', 5);
 const DAYS = +arg('days', 29); // Binance keeps 30 days of positioning; one more day is used as warm-up
 const TRAIN = +arg('train', 19);
 const OUT = arg('out', fileURLToPath(new URL('../worker/data/backtest.json', import.meta.url)));
@@ -80,7 +89,7 @@ async function historyFor(path, symbol, from, to, field) {
   return out;
 }
 
-/** Positioning keyed by the 5-minute slot in which each snapshot became available (no look-ahead). */
+/** Positioning keyed by the 5-minute slot of Binance's timestamp; the backtest reads it one slot late, which is safe whether the stamp is the start or the end of the period. */
 function mergePositioning(oi, whales, crowd) {
   const pos = new Map();
   const put = (map, key) => {
@@ -103,7 +112,21 @@ async function download() {
   const posFrom = now - 30 * 1440 * MIN + 10 * MIN; // Binance rejects positioning requests older than 30 days
   const [info, tickers] = await Promise.all([get('/fapi/v1/exchangeInfo', {}), get('/fapi/v1/ticker/24hr', {})]);
   const ok = new Set(info.symbols.filter((s) => s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT' && s.status === 'TRADING' && s.onboardDate < from).map((s) => s.symbol));
-  const symbols = tickers.filter((t) => ok.has(t.symbol)).sort((a, b) => +b.quoteVolume - +a.quoteVolume).slice(0, PAIRS).map((t) => t.symbol);
+  let symbols = tickers.filter((t) => ok.has(t.symbol)).map((t) => t.symbol);
+  if (symbols.length > PAIRS) {
+    // Rank by the first full day of the window, so today's pumpers are not favoured.
+    log(`Ranking ${symbols.length} pairs by their volume on the first day of the window…`);
+    const vol = new Map();
+    for (const symbol of symbols) {
+      try {
+        const k = await get('/fapi/v1/klines', { symbol, interval: '1d', startTime: from, limit: 1 });
+        vol.set(symbol, k.length ? +k[0][7] : 0);
+      } catch {
+        vol.set(symbol, 0);
+      }
+    }
+    symbols = symbols.sort((a, b) => vol.get(b) - vol.get(a)).slice(0, PAIRS);
+  }
   const data = [];
   for (const [n, symbol] of symbols.entries()) {
     log(`${n + 1}/${symbols.length} ${symbol}`);
@@ -113,7 +136,13 @@ async function download() {
       const whales = await historyFor('/futures/data/topLongShortPositionRatio', symbol, posFrom, now, 'longAccount');
       const crowd = await historyFor('/futures/data/globalLongShortAccountRatio', symbol, posFrom, now, 'longAccount');
       if (minutes.length < 2 * 1440) throw new Error('not enough history');
-      data.push({ symbol, minutes, pos: mergePositioning(oi, whales, crowd) });
+      let funding = [];
+      try {
+        funding = (await get('/fapi/v1/fundingRate', { symbol, startTime: from, limit: 1000 })).map((r) => ({ t: +r.fundingTime, rate: +r.fundingRate }));
+      } catch (e) {
+        log(`  funding unavailable for ${symbol}: ${e.message}`);
+      }
+      data.push({ symbol, minutes, funding, pos: mergePositioning(oi, whales, crowd) });
     } catch (e) {
       log(`  skipped: ${e.message}`);
     }
@@ -157,7 +186,7 @@ function synthetic() {
 }
 
 const t0 = Date.now();
-log(demo ? 'Backtest on synthetic data (--demo)' : `Downloading ${DAYS + 1} days for the top ${PAIRS} pairs…`);
+log(demo ? 'Backtest on synthetic data (--demo)' : `Downloading ${DAYS + 1} days for ${PAIRS === Infinity ? 'every pair' : `the top ${PAIRS} pairs by first-day volume`}…`);
 const data = demo ? synthetic() : await download();
 if (!data.length) {
   console.error('No data downloaded; nothing to test.');
@@ -166,7 +195,8 @@ if (!data.length) {
 log(`Replaying ${data.length} pairs…`);
 const report = runBacktest(data, {
   trainDays: TRAIN,
-  costPct: DEFAULTS.costPct,
+  stepDays: STEP,
+  costPct: COST,
   onProgress: (k, n) => k % 9 === 0 && log(`  rule set ${k}/${n}`),
 });
 report.demo = demo;
@@ -174,7 +204,9 @@ report.symbols = data.map((d) => d.symbol);
 mkdirSync(dirname(OUT), { recursive: true });
 writeFileSync(OUT, JSON.stringify(report, null, 1));
 
-const fmt = (r) => `${r.signals} signals, ${r.closed} closed, win rate ${r.winRate == null ? '–' : Math.round(r.winRate * 100) + '%'}, expectancy ${r.expectancy == null ? '–' : r.expectancy.toFixed(2) + '%'} per signal`;
+const ci = (v, d = 2) => (v ? ` (95% range ${v[0].toFixed(d)} to ${v[1].toFixed(d)})` : '');
+const fmt = (r) => `${r.signals} signals (${r.unresolved} too recent to judge), ${r.closed} closed, win rate ${r.winRate == null ? '–' : Math.round(r.winRate * 100) + '%'}, expectancy ${r.expectancy == null ? '–' : r.expectancy.toFixed(2) + '%'} per signal${ci(r.expectancyCI)}`;
+const g = report.gridSpread;
 console.log(`
 Best rules on the tuning period (${report.bestRuleId}): ${JSON.stringify(report.bestRules)}${report.enoughSignals ? '' : '  (fewer than 30 closed signals: too few to choose reliably)'}
   Tuning, first ${report.trainDays} days: ${fmt(report.train)}
@@ -182,5 +214,7 @@ Best rules on the tuning period (${report.bestRuleId}): ${JSON.stringify(report.
 Defaults (${report.defaults.ruleId}):
   Tuning: ${fmt(report.defaults.train)}
   Test:   ${fmt(report.defaults.test)}
-All results after ${report.costPct}% round-trip costs. Saved to ${OUT} (${Math.round((Date.now() - t0) / 1000)}s).
+Across all ${g.ruleSets} rule sets on the test period: median ${g.median == null ? '–' : g.median.toFixed(2) + '%'}, middle half ${g.p25 == null ? '–' : g.p25.toFixed(2)} to ${g.p75 == null ? '–' : g.p75.toFixed(2)}%, ${g.positiveShare == null ? '–' : Math.round(g.positiveShare * 100) + '%'} of rule sets positive.
+${report.walkForward ? `Walk-forward (${report.walkForward.folds.length} folds, tuned before each split): ${report.walkForward.pooled.signals} signals, expectancy ${report.walkForward.pooled.expectancy == null ? '–' : report.walkForward.pooled.expectancy.toFixed(2) + '%'}${ci(report.walkForward.pooled.expectancyCI)}` : 'Walk-forward: not enough days for it.'}
+All results after ${report.costPct}% round-trip costs${report.fundingIncluded ? ' plus funding' : ''}. Saved to ${OUT} (${Math.round((Date.now() - t0) / 1000)}s).
 `);

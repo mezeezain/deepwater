@@ -171,6 +171,8 @@ export function pumpsView(root, { go }) {
             h('option', { value: 'fixed', selected: cfg.stopMode !== 'vol' }, 'Fixed %'),
             h('option', { value: 'vol', selected: cfg.stopMode === 'vol' }, 'Volatility-based'))),
         h('label.check', h('input#cfg-edge', { type: 'checkbox', checked: cfg.requireEdge, onchange: (e) => { saveConfig(catcher, { requireEdge: e.target.checked }); render(); } }), 'Require positioning edge'),
+        h('label.check', { title: 'Fire only when the pair has just crossed the trigger upward (5 minutes ago it was still below). Off: any pair sitting in the band can alert, including one sliding down through it.' },
+          h('input#cfg-cross', { type: 'checkbox', checked: cfg.requireCrossing, onchange: (e) => { saveConfig(catcher, { requireCrossing: e.target.checked }); render(); } }), 'Only fire on a fresh upward crossing'),
         h('label.check', { title: 'Needs exact whale data. Skips alerts where Binance Smart Money whales lean short and their shorts are not losing. Pairs without whale data are never blocked.' },
           h('input#cfg-whale', { type: 'checkbox', checked: cfg.requireWhaleBias, onchange: (e) => { saveConfig(catcher, { requireWhaleBias: e.target.checked }); render(); } }), 'Only alert when whale bias agrees'),
       ),
@@ -201,9 +203,9 @@ export function pumpsView(root, { go }) {
           h('button.lens', { type: 'button', 'aria-pressed': String(scope === 'all'), onclick: () => { scope = 'all'; store.set('catcher-scope', scope); render(); } }, `All rules · ${all.length}`))),
       h('div.summary',
         tile('Closed signals', st.closed, `${st.tracking} still open`),
-        tile('Win rate', pctOr(st.winRate), 'closed, after costs'),
+        tile('Win rate', pctOr(st.winRate), st.winRateCI ? `95% range ${pctOr(st.winRateCI[0])} to ${pctOr(st.winRateCI[1])}` : 'closed, after costs'),
         tile('Average win / loss', st.avgWin == null && st.avgLoss == null ? '–' : `${st.avgWin == null ? '–' : fmtPct(st.avgWin)} / ${st.avgLoss == null ? '–' : fmtPct(st.avgLoss)}`),
-        tile('Expectancy', st.expectancy == null ? '–' : fmtPct(st.expectancy, 2), `per signal, after ${cost}% costs`, signClass(st.expectancy)),
+        tile('Expectancy', st.expectancy == null ? '–' : fmtPct(st.expectancy, 2), st.expectancyCI ? `95% range ${fmtPct(st.expectancyCI[0], 2)} to ${fmtPct(st.expectancyCI[1], 2)}` : `per signal, after ${cost}% costs`, signClass(st.expectancy)),
         tile('Hit the stop', pctOr(st.stopped), 'of closed signals'),
         tile('Best case', st.medianPeak == null ? '–' : fmtPct(st.medianPeak), `median peak · ${pctOr(st.hit10)} touched +10%`),
       ),
@@ -212,7 +214,7 @@ export function pumpsView(root, { go }) {
         : null,
       h('p.note', small
         ? `Only ${st.closed} closed signal${st.closed === 1 ? '' : 's'} so far${scope === 'current' ? ` with rule set ${rid}` : ''}: too few to judge the scanner. Treat these numbers as anecdotes until there are at least a few dozen.`
-        : `Rule set ${rid}. Expectancy is the average realised result per closed signal after ${cost}% round-trip costs. Positive expectancy on past alerts doesn't guarantee future results.`),
+        : `Rule set ${rid}. Expectancy is the average realised result per closed signal after ${cost}% round-trip costs (funding paid while holding is not included). The ranges are 95% intervals from the signals so far; they assume independent signals, but pumps cluster (many coins move in the same hour), so the real uncertainty is wider. Positive expectancy on past alerts doesn't guarantee future results.`),
     );
   }
 
@@ -344,17 +346,22 @@ export function pumpsView(root, { go }) {
       fill(backtestBox, h('p.note', 'No backtest has been run yet. Until one shows a positive result after costs on data it wasn’t tuned on, treat this page as a positioning dashboard, not a signal service. Run tools/backtest.mjs on your server to replay the engine over Binance’s last 30 days.'));
       return;
     }
+    const range = (v) => (v ? h('span.sub', ` (${fmtPct(v[0], 1)} to ${fmtPct(v[1], 1)})`) : null);
     const line = (label, r) => h('tr.static',
       h('th', { scope: 'row' }, label),
-      h('td.num', r.signals),
+      h('td.num', r.signals, r.unresolved ? h('span.sub', ` +${r.unresolved} too recent`) : null),
       h('td.num', r.winRate == null ? '–' : `${Math.round(r.winRate * 100)}%`),
-      h(`td.num.${signClass(r.expectancy)}`, r.expectancy == null ? '–' : fmtPct(r.expectancy, 2)),
+      h(`td.num.${signClass(r.expectancy)}`, r.expectancy == null ? '–' : fmtPct(r.expectancy, 2), range(r.expectancyCI)),
       h('td.num', r.stopped == null ? '–' : `${Math.round(r.stopped * 100)}%`));
+    const g = bt.gridSpread;
+    const wf = bt.walkForward?.pooled;
     fill(backtestBox, 
-      h('p.note', `Run ${new Date(bt.ranAt).toLocaleString()} on ${bt.pairs} pairs, ${bt.days} days of Binance data, ${bt.costPct}% costs. Tuned on the first ${bt.trainDays} days, then tested on the last ${bt.testDays} days, which the tuning never saw.`),
+      h('p.note', `Run ${new Date(bt.ranAt).toLocaleString()} on ${bt.pairs} pairs, ${bt.days} days of Binance data, ${bt.costPct}% costs${bt.fundingIncluded ? ' plus funding' : ''}. Tuned on the first ${bt.trainDays} days, then tested on the last ${bt.testDays} days, which the tuning never saw.`),
       h('div.table-wrap', h('table.grid',
         h('thead', h('tr', ...['Period', 'Signals', 'Win rate', 'Expectancy', 'Hit stop'].map((t) => h('th', { scope: 'col' }, t)))),
-        h('tbody', line('Tuning period (in-sample)', bt.train), line('Test period (unseen)', bt.test)))),
+        h('tbody', line('Tuning period (in-sample)', bt.train), line('Test period (unseen)', bt.test), bt.defaults?.test ? line('Default rules, test period', bt.defaults.test) : null))),
+      g && h('p.note', `The chosen rules were the best of ${g.ruleSets} on the tuning period, so their test result flatters them. Across all ${g.ruleSets} rule sets the test period gave a median of ${g.median == null ? '–' : fmtPct(g.median, 2)} per signal (middle half ${g.p25 == null ? '–' : fmtPct(g.p25, 2)} to ${g.p75 == null ? '–' : fmtPct(g.p75, 2)}), and ${g.positiveShare == null ? '–' : Math.round(g.positiveShare * 100)}% of rule sets were positive.`),
+      wf && h('p.note', wf.signals ? `Walk-forward (tuned before each split, tested after it, ${bt.walkForward.folds.length} folds): ${wf.signals} signals, ${wf.expectancy == null ? '–' : fmtPct(wf.expectancy, 2)} per signal${wf.expectancyCI ? `, 95% range ${fmtPct(wf.expectancyCI[0], 2)} to ${fmtPct(wf.expectancyCI[1], 2)}` : ''}.` : 'Walk-forward: no signals in the test folds.'),
       h('p.note', bt.test.expectancy == null
         ? `No closed signals in the unseen test period, so there is nothing to judge yet. Treat alerts as a watchlist, not trade signals.`
         : bt.test.expectancy <= 0

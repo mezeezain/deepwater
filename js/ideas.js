@@ -152,15 +152,18 @@ export function evidence(idea, ctx, cfg = LAB_DEFAULTS) {
     });
   }
 
-  // 5. Funding: paying to hold a crowded side is a headwind
+  // 5. Funding: paying to hold a crowded side is a headwind. Judged per 8 hours so pairs that settle every
+  // 4 or 1 hours are compared fairly (an hourly rate of 0.01% costs 8 times what the same number means per 8h).
+  const hours = fundingHours(ctx.funding);
   const f = ctx.funding?.at(-1)?.rate;
   if (f != null) {
-    const paying = f * side; // > 0 when this side pays
+    const f8 = (f * 8) / hours;
+    const paying = f8 * side; // > 0 when this side pays
     checks.push({
       id: 'funding',
       label: 'Funding',
       state: paying > 0.0003 ? 'bad' : paying < 0 ? 'good' : 'neutral',
-      detail: `${(f * 100).toFixed(4)}% per 8h; ${paying > 0 ? `${way}s pay` : `${way}s get paid`}`,
+      detail: `${(f * 100).toFixed(4)}% every ${hours}h${hours === 8 ? '' : ` (${(f8 * 100).toFixed(4)}% per 8h)`}; ${paying > 0 ? `${way}s pay` : `${way}s get paid`}`,
     });
   }
 
@@ -173,8 +176,14 @@ export function evidence(idea, ctx, cfg = LAB_DEFAULTS) {
     detail: `stop ${idea.riskPct.toFixed(2)}% away; a round trip costs about ${costR.toFixed(2)}R`,
   });
 
-  const good = checks.filter((c) => c.state === 'good').length;
-  const bad = checks.filter((c) => c.state === 'bad').length;
+  // Top-20% lean, its trend and Smart Money all read the same thing (how big accounts are positioned) and move
+  // together, so together they count as one vote, not three.
+  const POSITIONING = new Set(['whales', 'trend', 'smart']);
+  const vote = (c) => (c.state === 'good' ? 1 : c.state === 'bad' ? -1 : 0);
+  const posVote = Math.max(-1, Math.min(1, checks.filter((c) => POSITIONING.has(c.id)).reduce((n, c) => n + vote(c), 0)));
+  const independent = checks.filter((c) => !POSITIONING.has(c.id));
+  const good = independent.filter((c) => c.state === 'good').length + (posVote > 0 ? 1 : 0);
+  const bad = independent.filter((c) => c.state === 'bad').length + (posVote < 0 ? 1 : 0);
   const score = good - bad;
   const recordBad = checks[0].state === 'bad';
   const grade = score >= 3 && !recordBad ? 'A' : score >= 1 && !recordBad ? 'B' : 'C';
@@ -221,4 +230,14 @@ export function priceCheck(idea, price) {
 
 function fmtR(v) {
   return v == null || !isFinite(v) ? '–' : `${v > 0 ? '+' : ''}${v.toFixed(2)}R`;
+}
+
+/** Hours between funding payments for a pair, read from the spacing of its recent payments (8 when unknown). */
+export function fundingHours(rows) {
+  if (!rows || rows.length < 2) return 8;
+  const gaps = [];
+  for (let i = rows.length - 1; i > 0 && gaps.length < 5; i--) gaps.push((rows[i].t - rows[i - 1].t) / 3_600_000);
+  gaps.sort((a, b) => a - b);
+  const median = gaps[Math.floor(gaps.length / 2)];
+  return [1, 2, 4, 8].reduce((best, h) => (Math.abs(h - median) < Math.abs(best - median) ? h : best), 8);
 }

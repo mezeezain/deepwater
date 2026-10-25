@@ -11,9 +11,9 @@ const share = (v) => `${Math.round(v * 100)}%`;
 // Each layer: a pane under the price chart, or an overlay on the price chart.
 export const LAYERS = [
   { id: 'gap', group: 'Whales', label: 'Whales vs crowd', hint: 'Exact Binance Smart Money whales (by size) when available, plus Binance’s top 20% of accounts by margin balance (by position) and all accounts' },
-  { id: 'shift', group: 'Whales', label: 'Whale moves', hint: 'Exact from Binance Smart Money updates. Without that data: top-20% tilt × total open interest, an estimate that mostly follows open interest. Grey dots: group membership changed, not a trade' },
-  { id: 'opens', group: 'Whales', label: 'Whale opens', hint: 'New positions only, closures excluded. Exact from Smart Money; otherwise a top-20% tilt × open interest estimate' },
-  { id: 'net', group: 'Whales', label: 'Whale net position', hint: 'Whale longs minus shorts. Exact from Smart Money; otherwise a top-20% tilt × open interest estimate' },
+  { id: 'shift', group: 'Whales', label: 'Whale moves', needsExact: true, hint: 'Changes in whale net exposure between Binance Smart Money updates (needs the whale data server). Grey dots: group membership changed, not a trade' },
+  { id: 'opens', group: 'Whales', label: 'Whale opens', needsExact: true, hint: 'New whale positions only, closures excluded (needs the whale data server)' },
+  { id: 'net', group: 'Whales', label: 'Whale net position', needsExact: true, hint: 'Whale longs minus shorts, in USD (needs the whale data server)' },
   { id: 'entries', group: 'Whales', label: 'Whale entry lines', overlay: true, hint: 'Average entry of Smart Money whale longs and shorts (only shown with exact data)' },
   { id: 'flow', group: 'Market', label: 'OI by aggressor', hint: 'Every new contract opens a long and a short. This assigns each open interest change to the aggressive (taker) side, so it shows who pushed, not who is now positioned. Estimate' },
   { id: 'cvd', group: 'Market', label: 'CVD', hint: 'Cumulative taker buy minus taker sell volume' },
@@ -83,14 +83,17 @@ export function tokenView(root, { symbol, go, params = {}, setParams = () => {} 
     const groups = [...new Set(LAYERS.map((l) => l.group))];
     fill(layerBar, ...groups.map((g) => h('div.layer-group',
       h('span.layer-group-label', g),
-      ...LAYERS.filter((l) => l.group === g).map((l) =>
-        h('button.layer', { 'aria-pressed': String(layers.has(l.id)), title: l.hint, onclick: () => {
+      ...LAYERS.filter((l) => l.group === g).map((l) => {
+        // Dollar-valued whale layers need exact Smart Money data: from the top-20% ratio they would only echo open interest.
+        const locked = l.needsExact && data && !data.exact;
+        return h('button.layer', { 'aria-pressed': String(layers.has(l.id) && !locked), disabled: locked, title: locked ? 'Needs exact whale data from the whale data server. Without it these dollar figures would mostly just follow open interest.' : l.hint, onclick: () => {
           layers.has(l.id) ? layers.delete(l.id) : layers.add(l.id);
           store.set('chart-layers', [...layers]);
           shareState();
           renderControls();
           renderChart();
-        } }, l.label)))));
+        } }, l.label);
+      }))));
   }
 
   async function loadHead() {
@@ -143,6 +146,7 @@ export function tokenView(root, { symbol, go, params = {}, setParams = () => {} 
           data.exact = { source: smartHist.source, aligned, latest: summarize(last, cohort, last.oiUsd), whale: summarize(last, 'whale', last.oiUsd), smart: summarize(last, 'smart', last.oiUsd), t: last.t, firstT: snaps[0].t };
         }
       }
+      renderControls();
       renderChart();
       renderFreshness();
       renderSmart();
@@ -175,7 +179,6 @@ export function tokenView(root, { symbol, go, params = {}, setParams = () => {} 
     sourceTag.textContent = ex ? (exact.source === 'demo' ? 'Whale layers: exact (simulated)' : 'Whale layers: exact') : 'Whale layers: estimated';
     sourceTag.dataset.state = ex ? 'exact' : 'est';
     const add = (id, pane) => layers.has(id) && panes.push(pane);
-    const hasWhales = whales.some((w) => w.longUsd != null);
     add('gap', {
       id: 'gap', label: 'Whales vs crowd', kind: 'share', format: share,
       series: ex
@@ -189,7 +192,7 @@ export function tokenView(root, { symbol, go, params = {}, setParams = () => {} 
             { name: 'Crowd', values: bars.map((b) => b.crowdLong), color: '--crowd' },
           ],
     });
-    if (hasWhales || ex) {
+    if (ex) {
       const src = ex
         ? ex.map((a) => ({ shift: a.move, opensLong: a.opensLong, opensShort: a.opensShort == null ? null : a.opensShort, net: a.net, rosterChange: a.roster }))
         : whales;

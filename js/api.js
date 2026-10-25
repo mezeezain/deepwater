@@ -212,7 +212,7 @@ export async function getPositioningMap(symbols, onProgress = () => {}) {
     try {
       const body = await fromServer('/api/positioning', 120_000);
       if (body && Date.now() - body.t < 30 * 60_000) {
-        for (const r of body.rows) if (r.whales?.length && r.crowd?.length) out.set(r.symbol, r);
+        for (const r of body.rows) if (validPositioningRow(r)) out.set(r.symbol, r);
       }
     } catch {
       // The server being down only means falling back to Binance directly.
@@ -457,7 +457,22 @@ export async function getSmartOverview() {
   }
   const body = await fromServer('/api/overview', 60_000);
   if (!body) return null;
-  return { source: 'server', rows: new Map(body.rows.map((r) => [r.symbol, r])) };
+  return { source: 'server', rows: new Map(body.rows.filter(validOverviewRow).map((r) => [r.symbol, r])) };
+}
+
+export function validPositioningRow(r) {
+  const okSeries = (a) => Array.isArray(a) && a.length > 0 && a.every((p) => Number.isFinite(p?.t) && Number.isFinite(p?.long) && p.long >= 0 && p.long <= 1);
+  return !!r && typeof r.symbol === 'string' && /^[A-Z0-9]{1,30}USDT$/.test(r.symbol) && okSeries(r.whales) && okSeries(r.crowd) && okSeries(r.smart)
+    && Array.isArray(r.oi) && r.oi.every((p) => Number.isFinite(p?.t) && Number.isFinite(p?.value));
+}
+
+/**
+ * A server row is only used when it looks like one: a real symbol, shares between 0 and 1. The server is a third party
+ * from the browser's point of view, so a broken or hijacked one can't push absurd numbers into the tables.
+ */
+export function validOverviewRow(r) {
+  const share = r?.shown?.longShare;
+  return !!r && typeof r.symbol === 'string' && /^[A-Z0-9]{1,30}USDT$/.test(r.symbol) && (share == null || (Number.isFinite(share) && share >= 0 && share <= 1));
 }
 
 /** Snapshot history for one pair (oldest first), or null when unavailable. */

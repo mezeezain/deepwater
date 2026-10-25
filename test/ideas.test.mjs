@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { activeIdeas, evidence, comparable, watchLevels, priceCheck } from '../js/ideas.js';
+import { activeIdeas, evidence, comparable, watchLevels, priceCheck, fundingHours } from '../js/ideas.js';
 
 const H = 3_600_000;
 const flat = (n, p = 100) => Array.from({ length: n }, (_, i) => ({ t: i * H, o: p, h: p + 0.5, l: p - 0.5, c: p, v: 1000, takerBuy: 500, whaleLong: 0.6, crowdLong: 0.45 }));
@@ -66,4 +66,32 @@ test('watchLevels and priceCheck', () => {
   assert.equal(priceCheck(idea, 97.9).state, 'stop');
   assert.equal(priceCheck(idea, 100.8).state, 'chasing');
   assert.equal(priceCheck(idea, 100.2).state, 'ok');
+});
+
+test('fundingHours reads the payment interval from the spacing of payments', () => {
+  const rows = (h, n = 6) => Array.from({ length: n }, (_, i) => ({ t: i * h * H, rate: 0.0001 }));
+  assert.equal(fundingHours(rows(8)), 8);
+  assert.equal(fundingHours(rows(4)), 4);
+  assert.equal(fundingHours(rows(1)), 1);
+  assert.equal(fundingHours([]), 8);
+  assert.equal(fundingHours([{ t: 0, rate: 1 }]), 8);
+});
+
+test('evidence: the same funding rate is judged per 8 hours, so an hourly pair is not under-counted', () => {
+  const bars = [...flat(40), sweepBar(40 * H)];
+  const idea = activeIdeas(bars).find((x) => x.model === 'sweep');
+  const hourly = (rate) => Array.from({ length: 6 }, (_, i) => ({ t: i * H, rate }));
+  const eight = (rate) => Array.from({ length: 6 }, (_, i) => ({ t: i * 8 * H, rate }));
+  const state = (funding) => evidence(idea, { bars, trades: [], funding }).checks.find((c) => c.id === 'funding').state;
+  assert.equal(state(eight(0.0001)), 'neutral', '0.01% per 8h is mild');
+  assert.equal(state(hourly(0.0001)), 'bad', '0.01% every hour is 0.08% per 8h: a real cost');
+});
+
+test('evidence: the three positioning checks count as one vote', () => {
+  const bars = [...flat(40), sweepBar(40 * H)];
+  const idea = activeIdeas(bars).find((x) => x.model === 'sweep');
+  const ev = evidence(idea, { bars, trades: [], smart: { longShare: 0.8 }, funding: null });
+  const pos = ev.checks.filter((c) => ['whales', 'trend', 'smart'].includes(c.id) && c.state === 'good').length;
+  assert.ok(pos >= 2, 'several positioning checks are good');
+  assert.ok(ev.good <= ev.checks.filter((c) => c.state === 'good').length - (pos - 1), 'but they add one vote');
 });

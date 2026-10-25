@@ -45,6 +45,8 @@ export function guideView(root) {
         h('li', 'Account-based ratios treat a trader with $100 the same as one with $10 million. Whale numbers weight by size.'),
         h('li', 'Binance blocks some regions (HTTP 451/403). From those, Deepwater can only show the demo.'),
         h('li', 'Estimates (liquidation map, “whale moves” without exact data, OI by aggressor) are models, labelled as such where they appear.')),
+      h('h2', 'Privacy and the data server'),
+      h('p.note', 'Deepwater has no accounts and sets no cookies. By default the page also contacts a small server run by the project (deepwater-whales.duckdns.org) for exact whale data and the shared pump log, so that server sees your IP address like any web server does. Under Whales → Whale data you can disconnect from it or point the page at your own server; without it the page falls back to Binance’s public ratios. The server is one small machine, so it can be offline, and the page then says so. Numbers received from it are range-checked before they are shown.'),
       h('h2', 'Keyboard'),
       h('p.note', 'Tab moves between controls. Pair names in tables are links. Menus open with Enter or Space and close with Escape. “Skip to main content” appears on the first Tab.')),
   );

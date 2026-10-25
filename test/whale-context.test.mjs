@@ -11,7 +11,7 @@ test('whaleContext: whale shorts under water above their entry', () => {
   assert.equal(w.shortsUnderwater, true);
   assert.equal(Math.round(w.shortUpnl), Math.round((76300.79 - 80855) * 29054));
   assert.equal(w.leaning, 'short');
-  assert.equal(w.agrees, true, 'losing shorts favour a squeeze even though whales lean short');
+  assert.equal(w.agrees, false, 'losing shorts are reported but do not count: after a pump nearly every short is under water');
   assert.equal(w.nearLongEntry, false);
   assert.equal(w.ageH, 1);
 });

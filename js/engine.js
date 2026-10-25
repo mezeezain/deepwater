@@ -9,9 +9,13 @@
 // Once fired, a signal is tracked until it fails or gives back most of its gain, and its exit price is stored
 // so results can be reported as realised returns after costs, not only as the best price reached.
 
+import { bootstrapMean, wilson } from './stats.js';
+
 export const DEFAULTS = {
   minRise: 27, // % above the 24h low: fire once price is 1.27× its rolling 24h low (PumpGlass's trigger)
-  maxRise: 30, // % above the 24h low, upper bound: with a 5-second scan this catches the first crossing of +27%
+  maxRise: 40, // % above the 24h low, upper bound. Wide on purpose: a thin coin can jump from +25% to +35% between two samples
+  requireCrossing: true, // only fire on a fresh upward crossing of minRise: the price 5 minutes ago must still have been below it
+
   minImpulse: 0, // % change over the last 5 minutes (0 = no impulse requirement)
   minRvol: 2.5, // last 5m volume ÷ average 5m volume over the previous 30 minutes
   minTakerBuy: 0.56, // taker buy share of volume, last 5 minutes (0.5 = balanced)
@@ -25,15 +29,16 @@ export const DEFAULTS = {
   maxTrackHours: 72,
   cooldownMin: 60, // no new alert on the same pair for this long after one closes
   requireWhaleBias: false, // optional: skip alerts when Binance Smart Money whales lean the other way
-  maxBelowHigh: 20, // skip when price is more than this % below its 24h high (a bounce after a drop, not a breakout)
+  maxBelowHigh: 5, // skip when price is more than this % below its 24h high: a fresh breakout sits at its high, a rebound after a bigger peak does not
   stopMode: 'fixed', // 'fixed': stopPct below the alert; 'vol': volStopMult × recent 5-minute range, kept within 3–12%
   volStopMult: 3,
-  costPct: 0.15, // assumed round-trip fees + slippage, %, taken off every realised result
+  costPct: 0.3, // assumed round-trip fees + slippage, %, taken off every realised result (taker fees alone are about 0.1%)
+  stopSlipPct: 0.2, // candle replays fill a stop this % below the stop price (live closes at the tick that crossed it)
 };
 
 // Settings that decide which signals fire and how they close. Stored on each signal so the
 // record can be split by rule set after Settings change.
-const RULE_KEYS = ['minRise', 'maxRise', 'minImpulse', 'minRvol', 'minTakerBuy', 'minOiChange', 'requireEdge', 'minGap', 'squeezeCrowdLong', 'requireWhaleBias', 'maxBelowHigh', 'stopMode', 'stopPct', 'volStopMult', 'trailFrom', 'trailGiveBack', 'maxTrackHours'];
+const RULE_KEYS = ['minRise', 'maxRise', 'requireCrossing', 'minImpulse', 'minRvol', 'minTakerBuy', 'minOiChange', 'requireEdge', 'minGap', 'squeezeCrowdLong', 'requireWhaleBias', 'maxBelowHigh', 'stopMode', 'stopPct', 'volStopMult', 'trailFrom', 'trailGiveBack', 'maxTrackHours'];
 
 export function ruleSet(cfg = DEFAULTS) {
   return Object.fromEntries(RULE_KEYS.map((k) => [k, cfg[k] ?? DEFAULTS[k]]));
@@ -60,8 +65,12 @@ export function screen(ticker, price5mAgo, cfg = DEFAULTS) {
   const impulse = price5mAgo > 0 ? pct(ticker.price, price5mAgo) : 0;
   const belowHigh = ticker.high24h > 0 ? Math.max(0, ((ticker.high24h - ticker.price) / ticker.high24h) * 100) : null;
   const notBounce = belowHigh == null || cfg.maxBelowHigh == null || belowHigh <= cfg.maxBelowHigh;
-  const inBand = rise >= cfg.minRise && rise <= cfg.maxRise && notBounce;
-  return { pass: inBand && impulse >= cfg.minImpulse, inBand, rise, impulse, belowHigh };
+  // A fresh crossing: five minutes ago the pair was still below the trigger. Without this, a pump that peaked at
+  // +50% and slid back to +28% would fire on the way down. Unknown (no reference price) counts as a pass.
+  const riseThen = price5mAgo > 0 ? pct(price5mAgo, ticker.low24h) : null;
+  const crossed = !cfg.requireCrossing || riseThen == null || riseThen < cfg.minRise;
+  const inBand = rise >= cfg.minRise && rise <= cfg.maxRise && notBounce && crossed;
+  return { pass: inBand && impulse >= cfg.minImpulse, inBand, rise, impulse, belowHigh, crossed };
 }
 
 /**
@@ -165,7 +174,7 @@ export function createSignal({ symbol, price, t, rise, impulse, ctx = {}, gap = 
 }
 
 /** Feed one price into a tracking signal. Mutates and returns it. */
-export function updateSignal(sig, price, t, cfg = DEFAULTS) {
+export function updateSignal(sig, price, t, cfg = DEFAULTS, fill = null) {
   if (sig.status !== 'TRACKING' || !(price > 0) || t < sig.lastT) return sig;
   sig.lastPrice = price;
   sig.lastT = t;
@@ -181,7 +190,13 @@ export function updateSignal(sig, price, t, cfg = DEFAULTS) {
   const r = sig.rules ?? cfg;
   const stop = sig.stopPct ?? r.stopPct;
   const now = pct(price, sig.alertPrice);
-  if (now <= -stop) close(sig, t, price, 'Hit the stop');
+  if (now <= -stop) {
+    // Live ticks close at the price that crossed the stop. A candle replay only knows the candle's extreme, so it
+    // fills at the stop minus a slippage allowance (or at the open when the candle gapped through the stop).
+    const level = sig.alertPrice * (1 - stop / 100);
+    const exit = fill ? (fill.gap ? price : Math.max(price, level * (1 - (fill.slipPct ?? 0) / 100))) : price;
+    close(sig, t, exit, 'Hit the stop');
+  }
   else if (sig.rise >= r.trailFrom && now < sig.rise * (1 - r.trailGiveBack)) close(sig, t, price, 'Gave back most of the gain');
   else if (t - sig.alertT > r.maxTrackHours * 3_600_000) close(sig, t, price, 'Tracking window ended');
   return sig;
@@ -197,13 +212,14 @@ function close(sig, t, price, reason) {
 /**
  * Realised result of a closed signal, % after costs: bought at the alert price, sold at the exit.
  * Older signals saved before exit prices were stored use the last tracked price, which is the same thing.
+ * A signal replayed in the backtest may carry fundingPct (funding paid while it was open, % of position), also taken off.
  * Returns null for signals still open.
  */
 export function realised(sig, costPct = DEFAULTS.costPct) {
   if (sig.status !== 'CLOSED') return null;
   const exit = sig.exitPrice ?? sig.lastPrice;
   if (!(exit > 0) || !(sig.alertPrice > 0)) return null;
-  return pct(exit, sig.alertPrice) - costPct;
+  return pct(exit, sig.alertPrice) - costPct - (sig.fundingPct ?? 0);
 }
 
 /**
@@ -211,13 +227,14 @@ export function realised(sig, costPct = DEFAULTS.costPct) {
  * Within each candle the path is assumed to be open → nearer extreme → farther extreme → close.
  */
 export function replayCandles(sig, candles, cfg = DEFAULTS) {
+  const slipPct = cfg.stopSlipPct ?? DEFAULTS.stopSlipPct;
   for (const k of candles) {
     if (sig.status !== 'TRACKING') break;
     if (k.t + 60_000 <= sig.lastT) continue;
     const lowFirst = k.c >= k.o;
     const path = lowFirst ? [k.o, k.l, k.h, k.c] : [k.o, k.h, k.l, k.c];
     const step = 15_000;
-    path.forEach((p, i) => updateSignal(sig, p, Math.max(sig.lastT, k.t + i * step), cfg));
+    path.forEach((p, i) => updateSignal(sig, p, Math.max(sig.lastT, k.t + i * step), cfg, { slipPct, gap: i === 0 }));
   }
   return sig;
 }
@@ -233,7 +250,8 @@ export function inCooldown(symbol, signals, t, cfg = DEFAULTS) {
  * not what whales did in the last few minutes.
  *   shortsUnderwater  price is above the whales' average short entry, so their shorts are losing (squeeze fuel)
  *   nearLongEntry     price within 2% of the whales' average long entry
- *   agrees            whales lean long, or their shorts are under water: either favours a move up
+ *   agrees            whales lean long (at least half of whale size). Shorts being under water is reported but not counted:
+ *                     after a +27% run nearly every earlier short is, so it would pass almost everything
  */
 export function whaleContext(sum, price, now = Date.now()) {
   if (!sum || !(price > 0) || sum.longShare == null) return null;
@@ -256,7 +274,8 @@ export function whaleContext(sum, price, now = Date.now()) {
     shortsUnderwater,
     nearLongEntry,
     leaning: longShare >= 0.6 ? 'long' : longShare <= 0.4 ? 'short' : 'mixed',
-    agrees: longShare >= 0.5 || shortsUnderwater,
+    // Shorts are under water after almost any pump, so that adds no information; only the whales' lean counts.
+    agrees: longShare >= 0.5,
     updatedAt: sum.t ?? null,
     ageH: sum.t ? (now - sum.t) / 3_600_000 : null,
   };
@@ -284,6 +303,8 @@ export function stats(signals, { costPct = DEFAULTS.costPct } = {}) {
     count: signals.length,
     tracking: signals.length - closed.length,
     closed: closed.length,
+    winRateCI: wilson(wins.length, results.length),
+    expectancyCI: bootstrapMean(results),
     winRate: results.length ? wins.length / results.length : null,
     avgWin: mean(wins),
     avgLoss: mean(losses),
@@ -294,4 +315,11 @@ export function stats(signals, { costPct = DEFAULTS.costPct } = {}) {
     medianDip: median(closed.map((s) => s.dip)),
     costPct,
   };
+}
+
+/** The row whose timestamp is closest to targetT (rows: [{ timestamp }] as Binance returns them), or null. */
+export function nearestRow(rows, targetT) {
+  let best = null;
+  for (const r of rows) if (best == null || Math.abs(+r.timestamp - targetT) < Math.abs(+best.timestamp - targetT)) best = r;
+  return best;
 }

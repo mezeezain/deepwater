@@ -7,7 +7,7 @@ import { h, ticker, fmtPrice, fmtPct, signClass, toast, store, fill, visibleInte
 
 const FRAMES = ['15m', '1h', '4h'];
 const STATE_LABEL = {
-  enter: 'Enter at market now',
+  enter: 'Entry zone reached',
   limit: 'Limit order waiting',
   running: 'In progress',
 };
@@ -46,7 +46,7 @@ export function ideasView(root, { go }) {
       h('div.hero-text',
         h('p.eyebrow', '15m · 1h · 4h · refreshed at every candle close'),
         h('h1', 'Live setups'),
-        h('p.lede', 'Sweep reclaim, breakout retest and regime confluence setups that are live right now, with exact entry, stop and targets. Each is graded on whale positioning, the bigger timeframe, funding and costs, and shown with how comparable past trades actually did after fees.'),
+        h('p.lede', 'Sweep reclaim, breakout retest and regime confluence setups that are live right now, with exact entry, stop and targets. Each gets a simple check score from positioning, the bigger timeframe, funding and costs, and is shown with how comparable past trades actually did after fees. These are setups to study, not trade calls.'),
       ),
     ),
     h('section.panel',
@@ -56,6 +56,7 @@ export function ideasView(root, { go }) {
         h('div.toolbar-right', notifyBtn, h('button.btn', { type: 'submit' }, 'Update')),
       ),
       statusLine,
+      h('p.note', 'The letter is a count of checks for and against, with the three whale-positioning checks counted as one vote because they move together. It has not been shown to predict results: the measured record of comparable past trades under each setup is the evidence.'),
     ),
     ideasBox,
     h('section.panel', h('h2', 'Where the next setups would trigger'), watchBox,
@@ -279,7 +280,7 @@ export function ideasView(root, { go }) {
       : 'No comparable past trades in the loaded history.';
     return h(`section.panel.idea.grade-${x.invalid ? 'c' : x.ev.grade.toLowerCase()}`,
       h('div.idea-head',
-        h('span.grade', { title: x.invalid ? 'No longer valid' : `${x.ev.good} checks for, ${x.ev.bad} against` }, x.invalid ? '–' : x.ev.grade),
+        h('span.grade', { title: x.invalid ? 'No longer valid' : `${x.ev.good} checks for, ${x.ev.bad} against. A count of checks, not a measured win rate.` }, x.invalid ? '–' : x.ev.grade),
         h('div.idea-title',
           h('h2', ticker(x.symbol), ' ', h(`span.badge.${long ? 'up' : 'down'}`, long ? 'Long' : 'Short'), h('span.sub', ` ${x.tf} · ${m.name}`)),
           h('p.note', stateText, ' · signal candle ', fmtTime(x.signalT)),
