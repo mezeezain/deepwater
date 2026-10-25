@@ -3,7 +3,8 @@
 // `get(path, params)` is injected so each side can add its own caching and rate limiting.
 
 export const REST = 'https://fapi.binance.com';
-export const WS = 'wss://fstream.binance.com/ws';
+// Market streams (tickers, liquidations) moved to the /market path; the old /ws path stopped sending them in 2026.
+export const WS = 'wss://fstream.binance.com/market/ws';
 
 export function createBinanceSource({ get }) {
   let universe = new Set();
@@ -19,6 +20,12 @@ export function createBinanceSource({ get }) {
           .filter((s) => s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT' && s.status === 'TRADING')
           .map((s) => s.symbol),
       );
+      return tickers.filter((t) => universe.has(t.symbol)).map(fromRest);
+    },
+
+    /** Latest ticker for every pair in the universe, over REST (fallback when the stream is silent). */
+    async getTickers() {
+      const tickers = await get('/fapi/v1/ticker/24hr');
       return tickers.filter((t) => universe.has(t.symbol)).map(fromRest);
     },
 

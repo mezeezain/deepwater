@@ -170,3 +170,24 @@ test('scanner: old-format signals from the previous scanner are ignored', () => 
   const { sc } = rig({ signals: [{ id: 'X-1', symbol: 'XUSDT', status: 'TRACKING', alertT: 1_000_000, alertPrice: 1 }] });
   assert.equal(sc.signals.length, 0);
 });
+
+test('scanner: keeps scanning over REST when the ticker stream is silent', async () => {
+  let t = 1_000_000;
+  let polls = 0;
+  const source = {
+    async getUniverse() { return [tk(1.1, 1, 0, 'ZECUSDT')]; },
+    streamTickers() { return () => {}; }, // connects, never sends
+    async getTickers() { polls++; return [tk(1.3, 1, 0, 'ZECUSDT')]; },
+    async getCandles1m() { return []; },
+  };
+  const sc = new PumpScanner({ source, store: { load: () => [], save() {} }, now: () => t });
+  await sc.start();
+  await sc.pollIfStale();
+  assert.equal(polls, 0, 'stream only just opened');
+  t += 25_000;
+  await sc.pollIfStale();
+  assert.equal(polls, 1);
+  assert.equal(sc.state, 'polling');
+  assert.equal(sc.signals.length, 1, 'the crossing is caught from the REST poll');
+  sc.stop();
+});

@@ -142,7 +142,7 @@ scanner.on('change', () => {
   if (Date.now() - lastBeat < 60_000) return;
   lastBeat = Date.now();
   const tracking = scanner.signals.filter((s) => s.status === 'TRACKING').length;
-  log(`${scanner.tickers.size} pairs · ${tracking} active · ${scanner.signals.length} alerts in 30 days`);
+  log(`${scanner.tickers.size} pairs · ${scanner.state} · ${tracking} active · ${scanner.signals.length} alerts in 30 days`);
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {

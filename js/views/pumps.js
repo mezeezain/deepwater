@@ -142,8 +142,9 @@ export function pumpsView(root, { go }) {
     pulse.textContent = scanner.mode === 'shared'
       ? (scanner.error ? 'Server unreachable · retrying' : `Shared · ${scanner.pairsCount ?? '–'} pairs · updated ${scanner.lastTick ? fmtAgo(scanner.lastTick) : 'just now'}`)
       : scanner.state === 'live' ? `${scanner.demo ? 'Demo market' : 'This browser'} · ${scanner.tickers.size} pairs · live`
+      : scanner.state === 'polling' ? `This browser · ${scanner.tickers.size} pairs · every 10s (live stream unavailable)`
       : scanner.state === 'reconnecting' ? 'Reconnecting to Binance…' : 'Starting…';
-    pulse.dataset.state = scanner.mode === 'shared' ? (scanner.error ? 'reconnecting' : 'live') : scanner.state;
+    pulse.dataset.state = scanner.mode === 'shared' ? (scanner.error ? 'reconnecting' : 'live') : scanner.state === 'polling' ? 'reconnecting' : scanner.state;
 
     const count = (view) => selectRows(scanner.signals, { ...opts, view }, now).length;
     const lens = (pressed, label, onclick) => h('button.lens', { type: 'button', 'aria-pressed': String(pressed), onclick }, label);

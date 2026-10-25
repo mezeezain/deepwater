@@ -4,6 +4,8 @@
 import { shouldFire, createSignal, updateSignal, closeSignal, replayCandles, whaleContext, KEEP_DAYS, THRESHOLD } from './pump.js';
 
 const OI_EVERY_MS = 5 * 60_000; // open interest for tracked pairs
+const STALE_MS = 20_000; // no stream data for this long: poll REST until the stream is back
+const POLL_MS = 10_000;
 const OI_CONCURRENCY = 4;
 const MAX_SIGNALS = 3000;
 
@@ -43,13 +45,20 @@ export class PumpScanner {
     this.ingest(await this.source.getUniverse());
     await this.catchUp();
     this.stopStream = this.source.streamTickers(
-      (batch) => this.ingest(batch),
+      (batch) => {
+        this.lastStream = this.now();
+        this.state = 'live';
+        this.ingest(batch);
+      },
       (s) => {
-        this.state = s === 'open' ? 'live' : 'reconnecting';
+        if (s !== 'open' && this.state === 'live') this.state = 'reconnecting';
         this.emit('change');
       },
     );
-    this.state = 'live';
+    this.state = 'connecting';
+    this.lastStream = this.now();
+    // If the WebSocket goes quiet (blocked, or Binance moves the stream), keep scanning over REST.
+    this.pollTimer = setInterval(() => this.pollIfStale(), POLL_MS);
     this.refreshOi();
     this.oiTimer = setInterval(() => this.refreshOi(), OI_EVERY_MS);
     this.emit('change');
@@ -57,9 +66,25 @@ export class PumpScanner {
 
   stop() {
     clearInterval(this.oiTimer);
+    clearInterval(this.pollTimer);
     clearTimeout(this.saveTimer);
     this.stopStream?.();
     this.save();
+  }
+
+  async pollIfStale() {
+    if (!this.source.getTickers || this.polling) return;
+    if (this.now() - this.lastStream < STALE_MS) return;
+    this.polling = true;
+    try {
+      this.ingest(await this.source.getTickers());
+      this.state = 'polling';
+      this.emit('change');
+    } catch {
+      // Binance unreachable; try again next interval.
+    } finally {
+      this.polling = false;
+    }
   }
 
   /** Signals that were tracking when we last stopped: replay the minutes we missed from 1m candles. */

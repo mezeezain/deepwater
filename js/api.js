@@ -546,7 +546,7 @@ export function streamLiquidations(onEvent) {
     }
     let delay = 3000;
     const connect = () => {
-      ws = new WebSocket('wss://fstream.binance.com/ws/!forceOrder@arr');
+      ws = new WebSocket('wss://fstream.binance.com/market/ws/!forceOrder@arr');
       ws.onmessage = (msg) => {
         delay = 3000;
         let o;

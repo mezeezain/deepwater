@@ -11,6 +11,8 @@ import { PumpScanner } from './pump-scanner.js';
 import { THRESHOLD, validSignal } from './pump.js';
 import { store } from './util.js';
 
+// The ticker fallback polls every 10 s, so it must not be served from the 30 s cache.
+const binanceGet = (path, params) => get(path, params, path === '/fapi/v1/ticker/24hr' ? 5_000 : 30_000);
 const API_VERSION = 2; // shape of /api/catcher served by worker/catcher.mjs
 let instance;
 
@@ -49,7 +51,7 @@ async function boot() {
 }
 
 async function bootLocal(demo) {
-  const source = demo ? createDemoMarket() : createBinanceSource({ get: (path, params) => get(path, params, 30_000) });
+  const source = demo ? createDemoMarket() : createBinanceSource({ get: binanceGet });
   // Demo and live signals are kept apart so invented numbers never mix with real ones.
   const key = demo ? 'pumps-demo' : 'pumps';
   const signalStore = {
@@ -95,7 +97,7 @@ class SharedPumps {
     this.mode = 'shared';
     this.demo = false;
     this.listeners = new Map();
-    this.source = createBinanceSource({ get: (path, params) => get(path, params, 30_000) });
+    this.source = createBinanceSource({ get: binanceGet });
     this.error = null;
     this.apply(body, true);
     this.timer = setInterval(() => this.poll(), 10_000);

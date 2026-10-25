@@ -97,6 +97,10 @@ export function createDemoMarket({ now = () => Date.now(), seed = 7, tickMs = 10
       return pairs.map(toTicker);
     },
 
+    async getTickers() {
+      return pairs.map(toTicker);
+    },
+
     streamTickers(onBatch, onState = () => {}) {
       onState('open');
       const id = setInterval(() => {
