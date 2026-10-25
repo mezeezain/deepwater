@@ -2,7 +2,7 @@
 import { getLabData, getSmartOverview, getPrices, isDemo, CHART_INTERVALS } from '../api.js';
 import { MODELS, LAB_DEFAULTS, runLab } from '../setups.js';
 import { activeIdeas, evidence, comparable, watchLevels, priceCheck, HIGHER } from '../ideas.js';
-import { beep } from '../catcher-app.js';
+import { beep } from '../pump-app.js';
 import { h, ticker, fmtPrice, fmtPct, signClass, toast, store, fill, visibleInterval, riskNote, copyText } from '../util.js';
 
 const FRAMES = ['15m', '1h', '4h'];

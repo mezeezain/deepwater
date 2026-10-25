@@ -10,13 +10,14 @@ const TERMS = [
   ['Open interest (OI)', 'The total value of open contracts. Rising OI with rising price usually means new money is entering; falling OI means positions are closing.'],
   ['Funding', 'A periodic payment between longs and shorts that keeps the perpetual near spot. Positive: longs pay shorts. Most pairs settle every 8 hours; some every 4 or 1.'],
   ['Liquidation map', 'An estimate of where leveraged positions would be force-closed, built from open interest and typical leverage. It is a model, not Binance’s actual book.'],
-  ['Pump catcher', 'Scans every pair for sudden moves and records each alert with what happened afterwards, so you can judge the rules by their track record.'],
-  ['Expectancy', 'The average result per closed signal after costs. With few signals it is mostly noise; treat anything under a few dozen closed signals as anecdote.'],
+  ['Pump catcher', 'Flags a pair the moment its price rises 27% above its rolling 24-hour low (the start price), then records the move: gain now, peak since the alert, time to peak and the dip before the peak. These measure price after detection, not trading results.'],
+  ['Dip before peak', 'The lowest price between an alert and its peak, as a % of the alert price. A big rise with a small dip is the cleanest kind of run.'],
+  ['Expectancy', 'The average result per closed trade after costs (Setups lab). With few signals it is mostly noise; treat anything under a few dozen closed signals as anecdote.'],
 ];
 
 const SCREENS = [
   ['Whales', 'Ranks about 60 pairs by how far whales and the crowd disagree.'],
-  ['Pump catcher', 'Live alerts for fast movers with a running track record.'],
+  ['Pump catcher', 'Every pair that rose 27% off its 24h low: active moves now, and a 30-day alert log.'],
   ['Live setups', 'Current trade plans with entry, stop, targets and how similar setups did before.'],
   ['Setups lab', 'Replays each setup model over history so you can see how it would have performed.'],
   ['Charts', 'One pair in depth: price, open interest, CVD, whale layers and funding.'],

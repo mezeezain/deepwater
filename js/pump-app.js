@@ -1,35 +1,45 @@
-// The browser's pump catcher. Two modes:
-//   shared – reads the signal log published by worker/catcher.mjs on your server, so every device
-//            shows the same record, built from round-the-clock scanning;
+// The browser's Pump Catcher. Two modes:
+//   shared – reads the signal log published by worker/catcher.mjs on your server, so every device shows
+//            the same record, built from round-the-clock scanning;
 //   local  – scans in this browser while the page is open and keeps its own 30-day log.
 // Shared is used whenever the server answers; local is the fallback (and demo mode is always local).
+// Alerts reach you the moment they fire: there is no delay tier.
 import { get, isDemo, getSmartOverview, whaleServer } from './api.js';
 import { createBinanceSource } from './binance.js';
 import { createDemoMarket, demoHistory } from './demo-market.js';
-import { Catcher } from './catcher.js';
-import { DEFAULTS } from './engine.js';
+import { PumpScanner } from './pump-scanner.js';
+import { THRESHOLD, validSignal } from './pump.js';
 import { store } from './util.js';
 
+const API_VERSION = 2; // shape of /api/catcher served by worker/catcher.mjs
 let instance;
 
-export function getCatcher() {
+export function getPumps() {
   if (!instance) instance = boot();
   return instance;
 }
 
 /** 'auto' (shared when the server answers) or 'local'. Changing it reloads the page. */
-export const catcherMode = {
-  get: () => store.get('catcher-mode', 'auto'),
+export const pumpMode = {
+  get: () => store.get('pump-mode', 'auto'),
   set(mode) {
-    store.set('catcher-mode', mode);
+    store.set('pump-mode', mode);
     location.reload();
   },
 };
 
+// Data the previous pump scanner kept in this browser; its signals used different rules and fields.
+function dropOldScannerData() {
+  try {
+    for (const k of ['signals', 'signals-demo', 'catcher-cfg', 'catcher-tab', 'catcher-scope', 'catcher-mode']) localStorage.removeItem('dw:' + k);
+  } catch {}
+}
+
 async function boot() {
+  dropOldScannerData();
   const demo = await isDemo();
-  if (!demo && catcherMode.get() !== 'local') {
-    const shared = await SharedCatcher.connect(whaleServer.get());
+  if (!demo && pumpMode.get() !== 'local') {
+    const shared = await SharedPumps.connect(whaleServer.get());
     if (shared) {
       shared.on('alert', notify);
       return shared;
@@ -41,45 +51,40 @@ async function boot() {
 async function bootLocal(demo) {
   const source = demo ? createDemoMarket() : createBinanceSource({ get: (path, params) => get(path, params, 30_000) });
   // Demo and live signals are kept apart so invented numbers never mix with real ones.
-  const key = demo ? 'signals-demo' : 'signals';
+  const key = demo ? 'pumps-demo' : 'pumps';
   const signalStore = {
-    load: () => {
-      const saved = store.get(key, null);
-      return saved ?? (demo ? demoHistory(source) : []);
-    },
+    load: () => store.get(key, null) ?? (demo ? demoHistory(source) : []),
     save: (signals) => store.set(key, signals),
   };
-  // Whale context from Binance Smart Money (your whale data server, or simulated in demo mode).
   const whaleLookup = async (symbol) => {
     const sum = (await getSmartOverview())?.rows.get(symbol)?.shown ?? null;
     if (!demo || !sum?.mark) return sum;
-    // The demo scanner runs its own simulated prices; rescale the simulated whale book to them
-    // so entries sit at sensible distances. Live data never needs this.
-    const price = catcher.tickers.get(symbol)?.price;
+    // The demo scanner runs its own simulated prices; rescale the simulated whale book to them.
+    const price = scanner.tickers.get(symbol)?.price;
     if (!price) return sum;
     const k = price / sum.mark;
     return { ...sum, mark: price, longEntry: sum.longEntry * k, shortEntry: sum.shortEntry * k, longQty: sum.longQty / k, shortQty: sum.shortQty / k };
   };
-  const catcher = new Catcher({ source, store: signalStore, cfg: store.get('catcher-cfg', {}), whaleLookup });
-  catcher.demo = demo;
-  catcher.mode = 'local';
-  catcher.pairsCount = null;
-  catcher.on('alert', notify);
-  await catcher.start();
-  return catcher;
+  const scanner = new PumpScanner({ source, store: signalStore, whaleLookup });
+  scanner.demo = demo;
+  scanner.mode = 'local';
+  scanner.on('alert', notify);
+  await scanner.start();
+  return scanner;
 }
 
 /**
- * Read-only view of the server's pump catcher, refreshed every 10 seconds.
- * Same surface the pages use from Catcher: signals, cfg, state, lastEval, nearMisses(), on(), source.
+ * Read-only view of the server's Pump Catcher, refreshed every 10 seconds.
+ * Same surface the pages use from PumpScanner: signals, tickers.size, state, lastTick, threshold, on(), source.
  */
-class SharedCatcher {
+class SharedPumps {
   static async connect(base) {
     if (!base) return null;
     try {
       const body = await fetchJson(`${base}/api/catcher`);
-      if (body.demo) return null; // a demo-mode server would show invented signals as if real
-      return new SharedCatcher(base, body);
+      // A demo-mode server would show invented signals as if real; an older server speaks a different format.
+      if (body.demo || body.version !== API_VERSION) return null;
+      return new SharedPumps(base, body);
     } catch {
       return null;
     }
@@ -98,16 +103,14 @@ class SharedCatcher {
 
   apply(body, first = false) {
     const known = new Set((this.signals || []).map((s) => s.id));
-    this.signals = body.signals || [];
-    this.cfg = { ...DEFAULTS, ...body.cfg };
-    this.cfgId = body.cfgId;
+    this.signals = (Array.isArray(body.signals) ? body.signals : []).filter(validSignal);
+    this.threshold = Number.isFinite(body.threshold) ? body.threshold : THRESHOLD;
     this.state = body.state;
-    this.lastEval = body.lastEval;
+    this.lastTick = body.lastTick;
     this.startedAt = body.startedAt;
     this.pairsCount = body.pairs;
-    this.near = body.near || [];
     this.receivedAt = Date.now();
-    // New alerts since the last poll (not the whole log on first load) go to the alert toast and sound.
+    // New alerts since the last poll (not the whole log on first load) go to the toast and sound.
     if (!first) for (const s of this.signals) if (!known.has(s.id) && Date.now() - s.alertT < 10 * 60_000) this.emit('alert', s);
   }
 
@@ -119,10 +122,6 @@ class SharedCatcher {
       this.error = e.message;
     }
     this.emit('change');
-  }
-
-  nearMisses() {
-    return this.near;
   }
 
   get tickers() {
@@ -152,38 +151,21 @@ async function fetchJson(url) {
   }
 }
 
-/** Latest backtest published by the server, or null. */
-export async function getBacktest() {
-  const base = whaleServer.get();
-  if (!base || (await isDemo())) return null;
-  try {
-    return await fetchJson(`${base}/api/backtest`);
-  } catch {
-    return null;
-  }
-}
-
-export function saveConfig(catcher, patch) {
-  if (catcher.mode !== 'local') return;
-  catcher.setConfig(patch);
-  const diff = Object.fromEntries(Object.entries(catcher.cfg).filter(([k, v]) => DEFAULTS[k] !== v));
-  store.set('catcher-cfg', diff);
-}
-
 export const alertPrefs = {
-  get: () => store.get('catcher-alerts', { sound: false, desktop: false }),
-  set: (v) => store.set('catcher-alerts', v),
+  get: () => store.get('pump-alerts', store.get('catcher-alerts', { sound: false, desktop: false })),
+  set: (v) => store.set('pump-alerts', v),
 };
 
 function notify(sig) {
   const prefs = alertPrefs.get();
   const name = sig.symbol.replace(/USDT$/, '');
-  const text = `${name} alert at ${+sig.alertPrice.toPrecision(6)} · +${sig.riseFromLow.toFixed(1)}% off 24h low`;
-  document.dispatchEvent(new CustomEvent('catcher-alert', { detail: { sig, text } }));
+  const rise = ((sig.alertPrice - sig.startPrice) / sig.startPrice) * 100;
+  const text = `${name} at ${+sig.alertPrice.toPrecision(6)} · +${rise.toFixed(1)}% off its 24h low`;
+  document.dispatchEvent(new CustomEvent('pump-alert', { detail: { sig, text } }));
   if (prefs.sound) beep();
   if (prefs.desktop && 'Notification' in window && Notification.permission === 'granted') {
     try {
-      new Notification(`Pump alert: ${name}`, { body: text, tag: sig.id });
+      new Notification(`Pump: ${name}`, { body: text, tag: sig.id });
     } catch {}
   }
 }

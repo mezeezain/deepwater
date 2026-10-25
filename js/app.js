@@ -192,8 +192,8 @@ function paintStatus(mode, reason) {
 status.listeners.add(paintStatus);
 paintStatus(status.mode);
 
-// New pump alerts show up on every screen once the catcher is running.
-document.addEventListener('catcher-alert', (e) => {
+// New pump alerts show up on every screen once the Pump Catcher is running.
+document.addEventListener('pump-alert', (e) => {
   const { sig, text } = e.detail;
   const el = h('button.alert-toast', { onclick: () => { el.remove(); go('signal', sig.id); } }, h('strong', 'Pump alert '), text);
   let live = document.getElementById('alerts');

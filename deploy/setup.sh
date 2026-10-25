@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-step setup for the Deepwater servers on an Ubuntu VPS (tested target: Oracle Cloud Free Tier):
-# the whale data server (Binance Smart Money snapshots) and the pump catcher (shared signal log, Telegram).
+# the whale data server (Binance Smart Money snapshots) and the Pump Catcher (shared signal log, Telegram).
 #
 # Run it on the server, logged in as the normal user (e.g. ubuntu). Download it first so you can read
 # what it will do before it runs (it installs packages and opens firewall ports with sudo):
@@ -18,7 +18,7 @@
 #   6. opens ports 80/443 in the server firewall
 #   7. points your DuckDNS name at this server and keeps it updated
 #   8. runs the pump catcher as a service (shared signal log for every device; Telegram if configured)
-#   9. serves both over HTTPS at https://<name>.duckdns.org and schedules a weekly backtest
+#   9. serves both over HTTPS at https://<name>.duckdns.org
 # Safe to run again: each step checks what is already done.
 set -euo pipefail
 
@@ -212,14 +212,12 @@ WHALE_SERVER=http://localhost:$PORT
 # signal service; check the rules where you and your subscribers live first.
 #TELEGRAM_BOT_TOKEN=
 #TELEGRAM_CHAT_ID=
-# Custom rules (optional), e.g. CATCHER_CONFIG={"minRise":5,"stopMode":"vol"}
-#CATCHER_CONFIG=
 ENVFILE
   sudo chmod 600 /etc/deepwater/catcher.env
 fi
 sudo tee /etc/systemd/system/catcher.service >/dev/null <<UNIT
 [Unit]
-Description=Deepwater pump catcher (shared signal log)
+Description=Deepwater Pump Catcher (shared signal log)
 After=network-online.target whales.service
 Wants=network-online.target
 
@@ -247,11 +245,11 @@ done
 curl -fsS "http://localhost:$CATCHER_PORT/api/catcher" >/dev/null || fail "The pump catcher didn't start. Check: sudo journalctl -u catcher -n 50"
 ok "Pump catcher running on port $CATCHER_PORT (settings: /etc/deepwater/catcher.env, logs: sudo journalctl -u catcher -f)"
 
-# Weekly backtest on Sundays at 03:17 UTC, so the site's Backtest panel stays current.
-BT_LINE="17 3 * * 0 cd $APP_DIR && $(command -v node) tools/backtest.mjs >$HOME/backtest.log 2>&1"
-EXISTING=$(crontab -l 2>/dev/null | grep -v tools/backtest.mjs || true)
-printf '%s\n%s\n' "$EXISTING" "$BT_LINE" | sed '/^$/d' | crontab -
-ok "Weekly backtest scheduled (Sundays 03:17 UTC). Run one now with: cd ~/deepwater && node tools/backtest.mjs"
+# The old pump scanner's weekly backtest is gone; remove its cron line if an earlier version added it.
+if crontab -l 2>/dev/null | grep -q tools/backtest.mjs; then
+  { crontab -l 2>/dev/null | grep -v tools/backtest.mjs || true; } | crontab -
+  ok "Removed the old weekly backtest job"
+fi
 
 # ---------------------------------------------------------------- 9. HTTPS
 say "Setting up HTTPS with Caddy"
@@ -269,9 +267,6 @@ $DOMAIN {
     -Server
   }
   handle /api/catcher* {
-    reverse_proxy localhost:$CATCHER_PORT
-  }
-  handle /api/backtest* {
     reverse_proxy localhost:$CATCHER_PORT
   }
   handle {

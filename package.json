@@ -1,7 +1,7 @@
 {
   "name": "deepwater",
   "version": "1.1.0",
-  "description": "Binance USDⓈ-M futures positioning dashboard: whales vs crowd, pump scanner, liquidations, funding and a futures calculator.",
+  "description": "Binance USDⓈ-M futures positioning dashboard: whales vs crowd, Pump Catcher (27% off the 24h low), liquidations, funding and a futures calculator.",
   "private": true,
   "type": "module",
   "license": "MIT",

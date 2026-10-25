@@ -97,12 +97,21 @@ export function priceChart(container, { candles, overlays = [], markers = [], le
       const k = candles[i];
       const up = m.dir > 0;
       const my = up ? y(k.l) + 12 : y(k.h) - 12;
-      ctx.fillStyle = up ? c.up : c.down;
+      ctx.fillStyle = m.color ? cssVar(m.color) : up ? c.up : c.down;
       ctx.beginPath();
       ctx.moveTo(x(i), up ? my - 6 : my + 6);
       ctx.lineTo(x(i) - 5, up ? my + 3 : my - 3);
       ctx.lineTo(x(i) + 5, up ? my + 3 : my - 3);
       ctx.fill();
+      if (m.label) {
+        // Labelled marker (ALERT, PEAK): text beside the arrow, in the marker's colour.
+        ctx.fillStyle = m.color ? cssVar(m.color) : up ? c.up : c.down;
+        ctx.font = `600 11px ${cssVar('--font-data')}`;
+        ctx.textAlign = x(i) + 8 + ctx.measureText(m.label).width > plotW ? 'right' : 'left';
+        ctx.fillText(m.label, x(i) + (ctx.textAlign === 'right' ? -8 : 8), up ? my + 8 : my - 8);
+        ctx.textAlign = 'left';
+        ctx.font = `11px ${cssVar('--font-data')}`;
+      }
     }
 
     // Horizontal levels (alert price, peak, …) with a label at the left edge
@@ -170,7 +179,7 @@ export function priceChart(container, { candles, overlays = [], markers = [], le
 
   function nearestIndex(t) {
     const step = candles.length > 1 ? candles[1].t - candles[0].t : 1;
-    const i = Math.round((t - candles[0].t) / step);
+    const i = Math.floor((t - candles[0].t) / step);
     return i >= 0 && i < candles.length ? i : -1;
   }
 

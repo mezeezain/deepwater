@@ -1,6 +1,6 @@
 # Deepwater
 
-Binance futures positioning tools: whales vs crowd, a pump catcher that follows every alert to its outcome, live liquidations, market heatmap, funding rates and a futures calculator.
+Binance futures positioning tools: whales vs crowd, a Pump Catcher that flags every pair rising 27% off its 24-hour low and follows the move, live liquidations, market heatmap, funding rates and a futures calculator.
 
 Plain HTML, CSS and ES modules. No build step, no dependencies, no API keys.
 
@@ -24,10 +24,10 @@ Add `?demo` to the URL to use a simulated market. The app also switches to demo 
 | Pair page | `#SOLUSDT` | Indicator chart (5m–1d) with selectable layers, a four-point setup check, biggest whale moves and funding. See "Chart layers" |
 | Charts | `#charts` | The pair page for the last pair you opened |
 | Liquidation map | `#liqmap-SOLUSDT` | Illustrative liquidation zones on both sides of each open interest increase, cleared when a wick trades through them, with an adjustable leverage cap, the live order book, walls (size vs typical, how long they've rested) and Smart Money whale entries |
-| Pump catcher | `#pumps` | Scans every USDT perpetual every 5 seconds, fires alerts and tracks each to a realised exit; shared log across devices, track record after costs, backtest (see below) |
+| Pump catcher | `#pumps` | Every USDT perpetual on the live ticker stream; fires when price rises 27% off its rolling 24h low. **Active now** (start price, alert price, price now, gain %, peak % or off peak, time to peak, dip before peak, volume 24h, OI, duration) and a 30-day **Alert log**; All/24H/7D/30D windows, an At peak filter, sort by gain or volume, 15 rows at a time. Shared log across devices (see below) |
 | Live setups | `#ideas` | Setups live right now on BTC, ETH and SOL (or up to 5 pairs you choose) on 15m, 1h and 4h: exact entry, stop, TP1/TP2/TP3, an A/B/C evidence grade (setup record after costs, top 20% vs crowd and its trend, Smart Money whales, next timeframe's trend, funding, costs vs stop), the record of comparable past trades, live price checks (stop hit, don't chase), where the next setups would trigger, and optional sound/desktop alerts. Refreshes at every candle close |
 | Setups lab | `#setups` | Sweep reclaim, breakout retest and regime confluence replayed on up to 1,500 candles (15m/1h/4h) with real costs: paper win rate (TP1 touched) beside net win rate, profit factor and expectancy in R after fees, slippage and funding, split by whether Binance's top 20% leaned the trade's way. Latest setups with Smart Money context. See "Setups lab" |
-| Signal page | `#sig-<pair>-<time>` | Chart around one alert with alert, peak and dip lines, why it fired, and how it closed |
+| Signal page | `#sig-<pair>-<time>` | One alert: 15M/1H/4H/1D chart with ALERT and PEAK markers, alert/peak/time-to-peak/dip numbers, whale positioning at the alert, the pair's full signal history, links to its chart and liquidation map |
 | Liquidations | `#liquidations` | A live sample of forced liquidations by pair, long vs short (Binance's stream sends at most one per pair per second) |
 | Heatmap | `#heatmap` | Pairs sized by volume, coloured by 24h change or funding |
 | Funding | `#funding` | Every pair's funding, yearly equivalent, time to next payment |
@@ -122,57 +122,28 @@ API: `GET /api/health` (thin and public; add `?detail=1` on the machine itself f
 
 ## Pump catcher
 
-A pair has to pass three gates before it fires:
+Modelled on how PumpGlass's Pump Catcher works: a rebound detector on the 24-hour low, not a launch or breakout detector (pump.fun-style holder and rug checks don't apply to exchange perpetuals). The rules live in `js/pump.js` and are shared by the browser and the server:
 
-1. **Lift-off.** Price has just crossed **+27% off its rolling 24h low** (1.27× the low) and is no more than 5% below its 24h high. "Just crossed" is enforced: five minutes earlier the pair must still have been below +27%, so a pump that peaked higher and is sliding back through the band doesn't fire. The band runs to +40%, so a thin coin that jumps from +25% to +35% between two 5-second samples still alerts. The 24h-high condition separates a fresh breakout from a rebound after a bigger peak. Both rules can be relaxed in Settings. This matches PumpGlass's trigger: on its published alerts, alert price ÷ start price is 1.2700–1.2734 every time. A minimum 5-minute move can be set in Settings (off by default).
-2. **Order flow.** Volume over the last 5 minutes is at least 2.5× the recent average (average per minute × 5), taker buys are at least 56% of volume, and **real-time** open interest is up at least 1.5% on its level 15 minutes earlier.
-3. **Positioning.** Binance's top 20% of accounts are more than 5 points longer than all accounts, or all accounts are under 40% long. This gate can be switched off.
+1. **Watch every pair.** All Binance USDT-margined perpetuals that are trading, from the all-market ticker stream (about once a second).
+2. **Track the rolling 24h low.** Binance's 24h ticker low is the baseline, recorded as the **start price**.
+3. **Fire on the rebound.** When price reaches **1.27× the 24h low** (+27%), an alert fires. The first price seen at or past the line is the **alert price**, so alert ÷ start is 1.27 or a little above (PumpGlass's published rows sit at 1.2700–1.2775). The scanner must have seen the pair below the line first: a pair that was already above it when scanning started has pumped before we looked and waits for its next crossing.
+4. **Follow the move.** Gain now (price vs alert, can be negative), the peak since the alert, time to peak, the **dip before peak** (lowest price between the alert and the peak), 24h volume and open interest in USD (refreshed every 5 minutes for tracked pairs).
+5. **Re-arm.** A pair can fire again 24 hours after its last alert, or sooner if its 24h low drops below the last signal's start price (a fresh low, so a new rebound). A new signal on a pair closes the pair's earlier one.
+6. **Close.** PumpGlass doesn't publish its closing rule, so Deepwater uses a simple one: a signal stays **active** until price falls back to the 24h low it started from (the whole move given back), a new signal fires on the pair, or 30 days pass. The log keeps 30 days.
 
-**Exits and results.** Each signal closes at its stop, after giving back 45% of a gain over 8%, or after 72 hours. The stop is a fixed 7% by default, or optionally a volatility-based stop: 3× the pair's typical 5-minute range, kept within 3–12%. The **exit price is stored**, and the track record reports **realised** results after an assumed 0.3% round-trip cost (fees and slippage; funding paid while holding is not included for live signals), each with a 95% range because a few dozen signals say little:
-- win rate, average win and average loss;
-- **expectancy** per signal;
-- how often the stop was hit.
+There is no score, no order-flow filter and no trading exit: the percentages measure price after detection, not trading results, and some pumps reverse straight after the alert. There is also no paid delay: alerts reach every viewer the moment they fire.
 
-The best price reached ("peak") is still shown, but labelled as the best case. Open signals are counted separately.
-
-**Rules per signal.** Each alert stores the settings it fired with (a rule-set id such as `r2e4f63`), and its exit rules stay fixed after later Settings changes. The track record can show the current rule set on its own, so different settings never blend into one number.
-
-**Whale context (with a whale data server).** Each alert records where Binance Smart Money whales stood at the alert price:
-- their long share by size;
-- the distance to their average long and short entries;
-- whether their shorts are losing money there (squeeze fuel).
-
-This is context, not part of the trigger. An optional filter, off by default, skips alerts where whales lean short. ("Their shorts are losing" is shown but no longer counts as agreement: after a +27% run almost every earlier short is under water, so it passed nearly everything.)
+**Whale context.** With a whale data server, each alert records where Binance Smart Money whales stood at the alert price (long share by size, distance to their average entries, whether their shorts are losing). It is shown on the signal page and in Telegram alerts, and plays no part in firing.
 
 ### Shared signal log
 
-When the site can reach your server, the Pump catcher page shows the **shared log**: one record built by `worker/catcher.mjs` scanning around the clock. Every device then sees the same alerts and the same track record, and new alerts still pop up and beep in the browser. Without the server, the page scans in the browser instead, labelled **This browser only**: it scans only while the page is open and keeps its own log. You can switch between the two on the page.
+When the site can reach your server, the Pump catcher page shows the **shared log**: one record built by `worker/catcher.mjs` scanning around the clock. Every device then sees the same alerts, and new alerts still pop up and beep in the browser. Without the server (or with a server still running the old scanner), the page scans in the browser instead, labelled **This browser only**: it scans only while the page is open and keeps its own log. You can switch between the two on the page.
 
 The site's default server is `DEFAULT_WHALE_SERVER` in `js/api.js`. Change it if you fork the project.
 
-### Backtest
+### Server with Telegram alerts
 
-`tools/backtest.mjs` replays the exact engine over Binance's recent history:
-- the most traded pairs (ranked by volume on the **first day** of the window, not today, so current pumpers aren't favoured; `--pairs all` uses every pair that was trading; coins delisted since are not in Binance's list), 29 days plus a day of warm-up;
-- funding paid while each signal was open, charged to it;
-- 1-minute candles, and 5-minute open interest and long/short ratios.
-
-It tunes a small grid of settings on the first 19 days, then tests the chosen settings on the last 10 days, which the tuning never saw, after costs:
-
-```bash
-node tools/backtest.mjs              # ~20–30 minutes for 40 pairs (paced for Binance's limits)
-node tools/backtest.mjs --demo       # synthetic data, checks the tool runs
-```
-
-The report goes to `worker/data/backtest.json`. The pump catcher server publishes it at `/api/backtest`, and the Pump catcher page shows it. The setup script runs it every Sunday.
-
-The report is built to resist flattering itself: the first pre-filter uses the lowest trigger values in play (so the default rules are tested as they run live); positioning is read one 5-minute slot late (safe whichever end of the period Binance's timestamp marks) and the open-interest baseline is the snapshot nearest 15 minutes back, as live; signals alerted in the last 72 hours of data are left out rather than counted only if they closed early; stops fill at the stop price minus a slippage allowance rather than at the candle low; the chosen rule set is shown beside the **median and spread of all 54**, a **walk-forward** result (tune before each split, test after), and bootstrap 95% ranges.
-
-A replay still differs from live scanning: it fires at minute closes, has no Smart Money filter (Binance keeps no history), and assumes green candles hit their low before their high. Treat its numbers as an upper bound. Rule of thumb: if the unseen-period result is not positive at 0.3% costs over 50+ closed signals, rethink the trigger rather than tune it. Until the test period shows a positive expectancy after costs, treat this as a positioning dashboard, not a signal service.
-
-### Background worker with Telegram alerts
-
-`worker/catcher.mjs` runs the same engine on a server (Node 22+, no `npm install` needed):
+`worker/catcher.mjs` runs the same rules on a server (Node 22+, no `npm install` needed):
 
 ```bash
 # Try it on the simulated market
@@ -181,16 +152,13 @@ node worker/catcher.mjs --demo
 # Live, with Telegram alerts
 TELEGRAM_BOT_TOKEN=123456:ABC... TELEGRAM_CHAT_ID=-1001234567890 node worker/catcher.mjs
 
-# Custom thresholds
-CATCHER_CONFIG='{"minRise":5,"minRvol":3}' node worker/catcher.mjs
-
-# Whale context in Telegram alerts comes from the whale data server (default http://localhost:8787)
+# Whale context in alerts comes from the whale data server (default http://localhost:8787)
 WHALE_SERVER=http://localhost:8787 node worker/catcher.mjs
 ```
 
-The pump catcher worker also serves the shared log (`/api/catcher`, port 8788) and the backtest (`/api/backtest`). On a server set up with `deploy/setup.sh`, it runs as the `catcher` service, with settings in `/etc/deepwater/catcher.env` (Telegram, `CATCHER_CONFIG`); restart it with `sudo systemctl restart catcher`. Posting alerts to a public Telegram channel can make them look like a signal service, so check the rules where you and your subscribers live first.
+It serves the shared log at `/api/catcher` (port 8788; `version: 2` in the response). On a server set up with `deploy/setup.sh`, it runs as the `catcher` service, with settings in `/etc/deepwater/catcher.env` (Telegram); restart it with `sudo systemctl restart catcher`. Each Telegram alert links to its signal page (`SITE_URL`, default the GitHub Pages site). Posting alerts to a public Telegram channel can make them look like a signal service, so check the rules where you and your subscribers live first.
 
-To get a bot token, message @BotFather on Telegram. To get the chat ID, add the bot to your channel and send a message, then open `https://api.telegram.org/bot<token>/getUpdates`. Signals are saved to `worker/signals.json`. Run it with `pm2`, `systemd` or a Docker container on a VPS in a region Binance serves.
+To get a bot token, message @BotFather on Telegram. To get the chat ID, add the bot to your channel and send a message, then open `https://api.telegram.org/bot<token>/getUpdates`. Signals are saved to `worker/pumps.json`. Run it with `pm2`, `systemd` or a Docker container on a VPS in a region Binance serves.
 
 ### Tests
 
@@ -199,12 +167,9 @@ node --test
 ```
 
 These cover:
-- the gates, including the bounce filter, and the order-flow maths, including the volume baseline;
-- peak and dip accounting, the close rules and stops, exits and realised results;
-- rule sets stored per signal, and stats that count only closed signals;
-- catch-up from candles, and cooldown;
-- the indicators, the Smart Money parsing and snapshot diffs, the whale context and filter;
-- the backtest replay.
+- the Pump Catcher trigger (27% off the 24h low, watched crossings, re-arming), peak / time-to-peak / dip-before-peak accounting, closing, catch-up from candles, the Active and Alert log views, and the scanner loop;
+- the indicators, the Smart Money parsing and snapshot diffs, and the whale context;
+- the setups lab, live setups, router, validation and server helpers.
 
 ## Setups lab
 
@@ -244,16 +209,15 @@ node tools/setups.mjs --pairs 80 --tf 4h
 ```
 index.html              shell: top bar, status strip, <main>
 css/app.css             theme tokens (light + dark) and all component styles
-js/engine.js            pump catcher rules: pure functions, shared by browser and worker
-js/backtest.js          replays the engine over historical data, tune/test split (pure functions)
+js/pump.js              Pump Catcher rules: trigger, tracking, views, header stats (pure functions, shared by browser and server)
 js/smartmoney.js        Smart Money parsing, cohort choice, snapshot diffs (moves, opens, roster changes)
 js/smartmoney-demo.js   simulated Smart Money snapshots for demo mode
 js/indicators.js        chart layers, liquidation levels, order book walls, setup check (pure functions)
 js/multichart.js        stacked canvas chart: candles plus indicator panes, shared crosshair
-js/catcher.js           scanner loop: ticker stream, screening, confirmation, tracking
-js/binance.js           Binance source for the catcher (fetch + WebSocket only)
+js/pump-scanner.js      scanner loop: ticker stream, trigger, tracking, open interest
+js/binance.js           Binance source for the scanner (fetch + WebSocket only)
 js/demo-market.js       simulated market with the same interface
-js/catcher-app.js       browser scanner or shared server log, alerts (toast, sound, desktop notification)
+js/pump-app.js          browser scanner or shared server log, alerts (toast, sound, desktop notification)
 js/api.js               Binance client for the other screens: request queue, cache, live/demo switch
 js/demo.js              sample data for the other screens
 js/util.js              h() DOM helper, fill(), formatters, watchlist, CSV
@@ -265,21 +229,20 @@ assets/, manifest.webmanifest, robots.txt, sitemap.xml, 404.html   icons, social
 js/chart.js             canvas candle chart with share overlays and level lines; SVG sparkline
 js/app.js               router (pages load on demand), grouped navigation, focus handling
 js/views/*.js           one file per screen; each returns a cleanup function
-worker/catcher.mjs      Node worker: round-the-clock scanning, shared signal log API, Telegram alerts
-tools/backtest.mjs      downloads Binance history and runs the backtest
+worker/catcher.mjs      Pump Catcher server: round-the-clock scanning, shared signal log API, Telegram alerts
 js/setups.js            setups lab: indicators, setups, realistic execution, whale split (pure functions)
 tools/setups.mjs        setups lab over many pairs, from a server
 js/ideas.js             live setups: active plans, evidence grade, comparable history, trigger levels (pure functions)
-deploy/setup.sh         one-step VPS setup: both servers, firewall, DuckDNS, HTTPS, weekly backtest
+deploy/setup.sh         one-step VPS setup: both servers, firewall, DuckDNS, HTTPS
 worker/smartmoney.mjs   whale data server: polls Smart Money data, stores snapshots, serves the app
-test/*.test.mjs         engine, indicator, router, validation and server-helper tests (`npm test` or `node --test`)
+test/*.test.mjs         Pump Catcher, indicator, router, validation and server-helper tests (`npm test` or `node --test`)
 .github/workflows/ci.yml   runs the tests and syntax checks on every push
 ```
 
 ## Moving it into your own app
 
-- **React / Next.js / Vue:** keep `engine.js`, `catcher.js`, `binance.js`, `api.js` and `chart.js` as they are. Rewrite each `views/*.js` as a component that subscribes in an effect and returns its cleanup.
-- **Shared alerts for all visitors:** run the worker on a server and expose `signals.json` (or a database) over an API, then have the page read from it instead of scanning in each browser.
+- **React / Next.js / Vue:** keep `pump.js`, `pump-scanner.js`, `binance.js`, `api.js` and `chart.js` as they are. Rewrite each `views/*.js` as a component that subscribes in an effect and returns its cleanup.
+- **Shared alerts for all visitors:** run the worker on a server and expose `pumps.json` (or a database) over an API, then have the page read from it instead of scanning in each browser.
 
 ## Binance endpoints used
 
@@ -292,7 +255,7 @@ test/*.test.mjs         engine, indicator, router, validation and server-helper 
 | Whales (top traders, by position) | `GET /futures/data/topLongShortPositionRatio` |
 | Top accounts | `GET /futures/data/topLongShortAccountRatio` |
 | Crowd (all accounts) | `GET /futures/data/globalLongShortAccountRatio` |
-| Open interest | `GET /futures/data/openInterestHist` |
+| Open interest | `GET /futures/data/openInterestHist`, `GET /fapi/v1/openInterest` (Pump Catcher) |
 | Order book | `GET /fapi/v1/depth` |
 | Listing date | `onboardDate` in `GET /fapi/v1/exchangeInfo` |
 | Liquidations (live) | stream `!forceOrder@arr` |

@@ -4,3 +4,5 @@ node_modules/
 worker/data/
 *.log
 .DS_Store
+worker/pumps.json
+worker/pumps.json.tmp

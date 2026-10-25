@@ -1,7 +1,7 @@
-// Simulated futures market for the pump catcher's demo mode.
+// Simulated futures market for the Pump Catcher's demo mode.
 // Same interface as createBinanceSource(), so the scanner runs unchanged.
 // Every pair name and number here is invented.
-import { createSignal, updateSignal, DEFAULTS } from './engine.js';
+import { createSignal, updateSignal, THRESHOLD } from './pump.js';
 
 const NAMES = [
   'BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'ADA', 'AVAX', 'LINK', 'TON', 'SUI', 'WIF', 'ARB', 'OP', 'NEAR', 'APT',
@@ -106,31 +106,9 @@ export function createDemoMarket({ now = () => Date.now(), seed = 7, tickMs = 10
       return () => clearInterval(id);
     },
 
-    async getPrice5mAgo(symbol) {
+    async getOpenInterest(symbol) {
       const p = bySymbol.get(symbol);
-      const target = now() - 5 * 60_000;
-      return (p.path.find((x) => x.t >= target) || p.path[0])?.price ?? null;
-    },
-
-    async getContext(symbol) {
-      const p = bySymbol.get(symbol);
-      const hot = p.mode === 'pump' || now() - p.lastPumpT < 10 * 60_000;
-      const strong = hot && !p.fake;
-      const v = 1000 + r() * 500;
-      const klines = Array.from({ length: 35 }, (_, i) => {
-        const burst = i >= 30 && hot;
-        const vol = v * (burst ? 2.5 + r() * 3 : 0.7 + r() * 0.6);
-        const buy = vol * (burst ? (strong ? 0.58 + r() * 0.14 : 0.42 + r() * 0.1) : 0.45 + r() * 0.1);
-        return { v: vol, takerBuy: buy };
-      });
-      const whale = strong ? 0.55 + r() * 0.25 : 0.3 + r() * 0.4;
-      const crowd = strong ? 0.3 + r() * 0.2 : 0.45 + r() * 0.3;
-      return {
-        klines,
-        oiChange: strong ? 1.6 + r() * 5 : (r() - 0.6) * 4,
-        whaleLong: whale,
-        crowdLong: crowd,
-      };
+      return p ? (p.quoteVolume * 0.35) / p.price : null;
     },
 
     async getCandles1m(symbol, startTime) {
@@ -138,7 +116,7 @@ export function createDemoMarket({ now = () => Date.now(), seed = 7, tickMs = 10
     },
 
     async getCandles(symbol, interval, startTime) {
-      const ms = { '1m': 60_000, '5m': 300_000, '15m': 900_000 }[interval] || 60_000;
+      const ms = { '1m': 60_000, '5m': 300_000, '15m': 900_000, '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000 }[interval] || 60_000;
       return candlesFrom(bySymbol.get(symbol)?.path || [], ms, startTime);
     },
   };
@@ -162,33 +140,25 @@ function candlesFrom(path, ms, startTime = 0) {
 
 /**
  * An invented 30-day log so the demo opens with history to look at.
- * Each signal is produced by running a made-up price path through the real engine.
+ * Each signal is produced by running a made-up price path through the real tracking rules.
  */
 export function demoHistory(market, now = Date.now()) {
   const r = rand(99);
   const out = [];
   const names = market.pairs.map((p) => p.symbol);
-  for (let i = 0; i < 26; i++) {
+  for (let i = 0; i < 40; i++) {
     const symbol = names[5 + Math.floor(r() * (names.length - 5))];
-    const alertT = now - (0.3 + r() ** 1.4 * 29.5) * 86_400_000;
-    const price = +(10 ** (r() * 3 - 2)).toPrecision(5);
-    const sig = createSignal({
-      symbol,
-      price,
-      t: alertT,
-      rise: 27 + r() * 3,
-      impulse: r() * 6,
-      ctx: { rvol: 2.5 + r() * 5, takerBuy: 0.56 + r() * 0.15, oiChange: 1.5 + r() * 6, whaleLong: 0.55 + r() * 0.3, crowdLong: 0.3 + r() * 0.2 },
-      cfg: DEFAULTS,
-    });
-    sig.gap = (sig.whaleLong - sig.crowdLong) * 100;
-    // Random walk with a pump bias of varying strength; some fail straight away.
-    // Roughly: a quarter fail at once, most add a few percent, a few run hard.
-    const strength = r() < 0.25 ? -0.0004 : r() ** 3 * 0.0012;
+    const alertT = Math.round(now - (0.05 + r() ** 1.3 * 29.5) * 86_400_000);
+    const low = +(10 ** (r() * 3 - 2)).toPrecision(5);
+    const price = low * (1 + THRESHOLD / 100) * (1 + r() * 0.004); // first tick at or just past the line
+    const sig = createSignal({ symbol, price, low24h: low, t: alertT, volume24h: 2e6 + r() ** 2 * 4e8 });
+    sig.oiUsd = sig.volume24h * (0.15 + r() * 0.4);
+    // Random walk with a pump bias of varying strength: some reverse at once, most add a little, a few run hard.
+    const strength = r() < 0.3 ? -0.0006 : r() ** 3 * 0.0016;
     let p = price;
-    for (let m = 1; m < 72 * 60 && sig.status === 'TRACKING' && alertT + m * 60_000 < now; m++) {
-      const fade = m > 60 + r() * 600 ? -strength * 0.6 : strength;
-      p *= 1 + fade * Math.exp(-m / 400) + (r() - 0.5) * 0.006;
+    for (let m = 1; m < 30 * 1440 && sig.status === 'TRACKING' && alertT + m * 60_000 < now; m += m < 600 ? 1 : 15) {
+      const fade = m > 60 + r() * 900 ? -strength * 0.5 : strength;
+      p *= 1 + fade * Math.exp(-m / 500) + (r() - 0.5) * (m < 600 ? 0.006 : 0.02);
       updateSignal(sig, p, alertT + m * 60_000);
     }
     // A still-open example keeps being tracked against the simulated market's prices, so move it onto
@@ -196,31 +166,37 @@ export function demoHistory(market, now = Date.now()) {
     const pair = market.pairs.find((x) => x.symbol === symbol);
     if (sig.status === 'TRACKING' && pair?.price > 0) {
       const k = pair.price / sig.lastPrice;
-      for (const f of ['alertPrice', 'lastPrice', 'peakPrice', 'lowSinceAlert']) sig[f] *= k;
+      for (const f of ['startPrice', 'alertPrice', 'lastPrice', 'peakPrice', 'lowSinceAlert', 'dipLow']) sig[f] *= k;
     }
     sig.demo = true;
     out.push(sig);
   }
-  return out.sort((a, b) => b.alertT - a.alertT);
+  // One move per pair at a time, as the live scanner does.
+  out.sort((a, b) => b.alertT - a.alertT);
+  const seen = new Set();
+  for (const s of out) {
+    if (s.status === 'TRACKING' && seen.has(s.symbol)) Object.assign(s, { status: 'CLOSED', closedT: s.lastT, closeReason: 'A new signal fired on this pair' });
+    seen.add(s.symbol);
+  }
+  return out;
 }
 
 /** Candles around a demo history signal, rebuilt from its numbers. */
-export function demoSignalCandles(sig, ms = 300_000) {
+export function demoSignalCandles(sig, ms = 900_000) {
   const r = rand(sig.alertT % 100000);
   const end = sig.closedT || Date.now();
-  const start = sig.alertT - 12 * ms;
+  const start = Math.min(sig.alertT - 30 * ms, sig.alertT - 86_400_000);
   const pts = [];
   const dipT = sig.alertT + (sig.peakT - sig.alertT) * 0.2;
+  const lowT = sig.alertT - (sig.alertT - start) * 0.35;
   const target = (t) => {
-    if (t < sig.alertT) return sig.alertPrice * (1 - 0.05 * (1 - (t - start) / (sig.alertT - start)));
-    if (t < dipT) return sig.alertPrice * (1 + (sig.dip / 100) * ((t - sig.alertT) / (dipT - sig.alertT || 1)));
-    if (t <= sig.peakT) {
-      const k = (t - dipT) / (sig.peakT - dipT || 1);
-      return sig.alertPrice * (1 + sig.dip / 100) + (sig.peakPrice - sig.alertPrice * (1 + sig.dip / 100)) * k;
-    }
-    const k = (t - sig.peakT) / (end - sig.peakT || 1);
-    return sig.peakPrice + (sig.lastPrice - sig.peakPrice) * k;
+    if (t < lowT) return sig.startPrice * (1.08 - 0.08 * ((t - start) / (lowT - start || 1)));
+    if (t < sig.alertT) return sig.startPrice + (sig.alertPrice - sig.startPrice) * ((t - lowT) / (sig.alertT - lowT || 1)) ** 2;
+    if (t < dipT) return sig.alertPrice + (sig.dipLow - sig.alertPrice) * ((t - sig.alertT) / (dipT - sig.alertT || 1));
+    if (t <= sig.peakT) return sig.dipLow + (sig.peakPrice - sig.dipLow) * ((t - dipT) / (sig.peakT - dipT || 1));
+    return sig.peakPrice + (sig.lastPrice - sig.peakPrice) * ((t - sig.peakT) / (end - sig.peakT || 1));
   };
-  for (let t = start; t <= end; t += ms / 4) pts.push({ t, price: target(t) * (1 + (r() - 0.5) * 0.004) });
+  const step = Math.max(ms / 4, (end - start) / 2000);
+  for (let t = start; t <= end; t += step) pts.push({ t, price: Math.max(target(t), sig.startPrice * 0.999) * (1 + (r() - 0.5) * 0.004) });
   return candlesFrom(pts, ms, start);
 }

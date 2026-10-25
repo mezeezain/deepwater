@@ -1,35 +1,34 @@
 #!/usr/bin/env node
-// Runs the pump catcher around the clock and posts alerts to Telegram.
-// Same engine and rules as the web app. Needs Node 22+ (built-in fetch and WebSocket).
+// Pump Catcher server: watches every Binance USDT-M perpetual around the clock, fires when a pair rises 27%
+// off its rolling 24h low, follows each move, and posts alerts to Telegram the moment they fire.
+// Same rules as the web app (js/pump.js). Needs Node 22+ (built-in fetch and WebSocket).
 //
 //   TELEGRAM_BOT_TOKEN=123:abc TELEGRAM_CHAT_ID=-100123 node worker/catcher.mjs
 //   node worker/catcher.mjs --demo          # simulated market, no network
 //   WHALE_SERVER=http://localhost:8787      # whale data server for alert context (default; empty to turn off)
 //
-// Optional: SIGNALS_FILE (default worker/signals.json), CATCHER_CONFIG='{"minRise":5}'
+// Optional: SIGNALS_FILE (default worker/pumps.json)
 //
 // It also serves the shared signal log, so every device shows the same record:
-//   GET /api/catcher   status, settings, signals (30 days) and pairs close to firing
-//   GET /api/backtest  latest result of tools/backtest.mjs, if one has been run
-//   CATCHER_PORT=8788, HOST=127.0.0.1, ALLOW_ORIGIN (comma-separated; default the Deepwater site and localhost:8000), RATE_LIMIT=120 per minute, BACKTEST_FILE
+//   GET /api/catcher   status and every signal of the last 30 days
+//   CATCHER_PORT=8788, HOST=127.0.0.1, ALLOW_ORIGIN (comma-separated; default the Deepwater site and localhost:8000), RATE_LIMIT=120 per minute
 import http from 'node:http';
-import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { Catcher } from '../js/catcher.js';
-import { configId } from '../js/engine.js';
+import { PumpScanner } from '../js/pump-scanner.js';
+import { metrics } from '../js/pump.js';
 import { createBinanceSource, REST } from '../js/binance.js';
 import { createDemoMarket } from '../js/demo-market.js';
 import { guardedHandler, parseOrigins } from './http-util.mjs';
 
 const demo = process.argv.includes('--demo');
-const file = process.env.SIGNALS_FILE || fileURLToPath(new URL('./signals.json', import.meta.url));
-const cfg = process.env.CATCHER_CONFIG ? JSON.parse(process.env.CATCHER_CONFIG) : {};
+const file = process.env.SIGNALS_FILE || fileURLToPath(new URL('./pumps.json', import.meta.url));
 const tg = { token: process.env.TELEGRAM_BOT_TOKEN, chat: process.env.TELEGRAM_CHAT_ID };
 const PORT = +(process.env.CATCHER_PORT || 8788);
 const ORIGINS = parseOrigins(process.env.ALLOW_ORIGIN);
 const HOST = process.env.HOST || '127.0.0.1';
 const RATE_LIMIT = +(process.env.RATE_LIMIT || 120);
-const BACKTEST_FILE = process.env.BACKTEST_FILE || fileURLToPath(new URL('./data/backtest.json', import.meta.url));
+const SITE = (process.env.SITE_URL || 'https://mezeezain.github.io/deepwater/').replace(/\/?$/, '/');
 
 if (typeof WebSocket === 'undefined') {
   console.error('This worker needs Node 22 or newer (for the built-in WebSocket).');
@@ -93,7 +92,7 @@ async function whaleLookup(symbol) {
   return whaleCache.rows?.get(symbol) ?? null;
 }
 
-const catcher = new Catcher({ source, store, cfg, whaleLookup });
+const scanner = new PumpScanner({ source, store, whaleLookup });
 
 const name = (s) => s.symbol.replace(/USDT$/, '');
 const pct = (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`;
@@ -114,37 +113,41 @@ async function telegram(text) {
   }
 }
 
-catcher.on('alert', (s) => {
-  log(`ALERT ${s.symbol} @ ${px(s.alertPrice)} | ${pct(s.riseFromLow)} off 24h low | ${s.rvol?.toFixed(1)}x vol | buys ${Math.round(s.takerBuy * 100)}% | OI ${pct(s.oiChange)} | gap ${Math.round(s.gap)}`);
+const usd = (v) => (v == null ? '–' : v >= 1e9 ? `$${(v / 1e9).toFixed(2)}B` : v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : `$${Math.round(v / 1e3)}K`);
+
+scanner.on('alert', (s) => {
+  const m = metrics(s);
+  log(`ALERT ${s.symbol} @ ${px(s.alertPrice)} | 24h low ${px(s.startPrice)} | ${pct(m.riseAtAlert)} | vol ${usd(s.volume24h)} | OI ${usd(s.oiUsd)}`);
+  const w = s.whale;
   telegram(
-    `🚀 <b>${name(s)}</b> pump alert\n` +
-      `Price <code>${px(s.alertPrice)}</code> · ${pct(s.riseFromLow)} off 24h low · ${pct(s.impulse)} in 5m\n` +
-      `Volume ${s.rvol?.toFixed(1)}× · Taker buys ${Math.round(s.takerBuy * 100)}% · OI ${pct(s.oiChange)}\n` +
-      `Whales ${Math.round(s.whaleLong * 100)}% long vs crowd ${Math.round(s.crowdLong * 100)}%` +
-      (s.whale
-        ? `\nSmart Money whales ${Math.round(s.whale.longShare * 100)}% long` +
-          (s.whale.shortsUnderwater ? ` · whale shorts losing $${Math.round(-s.whale.shortUpnl).toLocaleString('en-US')}` : '') +
-          (s.whale.nearLongEntry ? ' · at whale long entry' : '')
-        : ''),
+    `🚀 <b>${name(s)}</b> pump · ${pct(m.riseAtAlert)} off its 24h low\n` +
+      `Alert <code>${px(s.alertPrice)}</code> · 24h low <code>${px(s.startPrice)}</code>\n` +
+      `Volume 24h ${usd(s.volume24h)} · OI ${usd(s.oiUsd)}` +
+      (w
+        ? `\nWhales ${Math.round(w.longShare * 100)}% long by size` +
+          (w.shortsUnderwater ? ` · whale shorts losing $${Math.round(-w.shortUpnl).toLocaleString('en-US')}` : '') +
+          (w.nearLongEntry ? ' · at whale long entry' : '')
+        : '') +
+      `\n<a href="${SITE}#sig-${encodeURIComponent(s.id)}">Signal page</a>`,
   );
 });
 
-catcher.on('closed', (s) => {
-  log(`CLOSED ${s.symbol} | rise ${pct(s.rise)} | dip before peak ${pct(s.dip)} | ${s.closeReason}`);
-  telegram(`🏁 <b>${name(s)}</b> closed · best ${pct(s.rise)} · dip before peak ${pct(s.dip)}\n${s.closeReason}`);
+scanner.on('closed', (s) => {
+  const m = metrics(s);
+  log(`CLOSED ${s.symbol} | peak ${pct(m.peak)} | dip before peak ${pct(m.dip)} | ${s.closeReason}`);
 });
 
 let lastBeat = 0;
-catcher.on('change', () => {
+scanner.on('change', () => {
   if (Date.now() - lastBeat < 60_000) return;
   lastBeat = Date.now();
-  const tracking = catcher.signals.filter((s) => s.status === 'TRACKING').length;
-  log(`${catcher.tickers.size} pairs · ${tracking} tracking · ${catcher.nearMisses().length} close to firing`);
+  const tracking = scanner.signals.filter((s) => s.status === 'TRACKING').length;
+  log(`${scanner.tickers.size} pairs · ${tracking} active · ${scanner.signals.length} alerts in 30 days`);
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
-    catcher.stop();
+    scanner.stop();
     log('Stopped, signals saved to', file);
     process.exit(0);
   });
@@ -158,35 +161,25 @@ const server = http.createServer(guardedHandler({
   trustProxy: HOST === '127.0.0.1' || HOST === '::1' || HOST === 'localhost',
   handler(req, res, { url, send }) {
     if (url.pathname === '/api/catcher') {
-      const near = catcher.nearMisses().slice(0, 12).map((c) => ({ symbol: c.symbol, screen: c.screen, checks: c.checks, error: c.error ?? null }));
       return send(200, {
+        version: 2,
         t: Date.now(),
         demo,
-        state: catcher.state,
-        startedAt: catcher.startedAt,
-        lastEval: catcher.lastEval,
-        pairs: catcher.tickers.size,
-        cfg: catcher.cfg,
-        cfgId: configId(catcher.cfg),
-        signals: catcher.signals,
-        near,
+        state: scanner.state,
+        startedAt: scanner.startedAt,
+        lastTick: scanner.lastTick,
+        pairs: scanner.tickers.size,
+        threshold: scanner.threshold,
+        signals: scanner.signals,
       });
     }
-    if (url.pathname === '/api/backtest') {
-      if (!existsSync(BACKTEST_FILE)) return send(404, { error: 'No backtest has been run yet. Run: node tools/backtest.mjs' });
-      try {
-        return send(200, JSON.parse(readFileSync(BACKTEST_FILE, 'utf8')));
-      } catch {
-        return send(500, { error: 'Backtest file is unreadable.' });
-      }
-    }
-    send(404, { error: 'Not found. Try /api/catcher or /api/backtest' });
+    send(404, { error: 'Not found. Try /api/catcher' });
   },
 }));
 server.listen(PORT, HOST, () => log(`Shared signal log on http://${HOST}:${PORT}/api/catcher (CORS: ${ORIGINS.join(', ')})`));
 
-log(`Starting pump catcher (${demo ? 'demo market' : 'Binance live'})${tg.token ? ', Telegram on' : ''}`);
-catcher.start().catch((err) => {
+log(`Starting Pump Catcher (${demo ? 'demo market' : 'Binance live'})${tg.token ? ', Telegram on' : ''}`);
+scanner.start().catch((err) => {
   console.error('Could not start:', err.message);
   process.exit(1);
 });
