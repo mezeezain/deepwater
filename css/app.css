@@ -511,3 +511,4 @@ main { min-height: 70vh; }
 footer a { color: inherit; }
 
 a.btn { display: inline-flex; align-items: center; text-decoration: none; color: inherit; }
+.seg[aria-checked='true']:not(.long):not(.short) { background: var(--fg); color: var(--bg); }
