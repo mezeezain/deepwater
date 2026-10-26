@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Pump Catcher server: watches every Binance USDT-M perpetual around the clock, fires when a pair rises 27%
-// off its rolling 24h low, follows each move, and posts alerts to Telegram the moment they fire.
+// off its rolling 24h low as a first breakout (no earlier pump, new 40-day high, flat base, volume), follows each move, and posts alerts to Telegram the moment they fire.
 // Same rules as the web app (js/pump.js). Needs Node 22+ (built-in fetch and WebSocket).
 //
 //   TELEGRAM_BOT_TOKEN=123:abc TELEGRAM_CHAT_ID=-100123 node worker/catcher.mjs
@@ -16,7 +16,7 @@ import http from 'node:http';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { PumpScanner } from '../js/pump-scanner.js';
-import { metrics } from '../js/pump.js';
+import { metrics, checkText } from '../js/pump.js';
 import { createBinanceSource, REST } from '../js/binance.js';
 import { createDemoMarket } from '../js/demo-market.js';
 import { guardedHandler, parseOrigins } from './http-util.mjs';
@@ -120,8 +120,12 @@ scanner.on('alert', (s) => {
   log(`ALERT ${s.symbol} @ ${px(s.alertPrice)} | 24h low ${px(s.startPrice)} | ${pct(m.riseAtAlert)} | vol ${usd(s.volume24h)} | OI ${usd(s.oiUsd)}`);
   const w = s.whale;
   telegram(
-    `🚀 <b>${name(s)}</b> pump · ${pct(m.riseAtAlert)} off its 24h low\n` +
+    `🚀 <b>${name(s)}</b> first breakout · ${pct(m.riseAtAlert)} off its 24h low\n` +
       `Alert <code>${px(s.alertPrice)}</code> · 24h low <code>${px(s.startPrice)}</code>\n` +
+      (s.breakout
+        ? `New 40-day high (was <code>${px(s.breakout.rangeHigh)}</code>) · no earlier pump (max 24h rise ${pct(s.breakout.priorRise)}) · ` +
+          `base range ${Math.round(s.breakout.baseRange)}% · volume ${s.breakout.volMult.toFixed(1)}× a normal day\n`
+        : '') +
       `Volume 24h ${usd(s.volume24h)} · OI ${usd(s.oiUsd)}` +
       (w
         ? `\nWhales ${Math.round(w.longShare * 100)}% long by size` +
@@ -130,6 +134,10 @@ scanner.on('alert', (s) => {
         : '') +
       `\n<a href="${SITE}#sig-${encodeURIComponent(s.id)}">Signal page</a>`,
   );
+});
+
+scanner.on('skipped', (x) => {
+  log(`SKIPPED ${x.symbol} @ ${px(x.price)} | ${x.checks.filter((c) => !c.ok).map(checkText).join(' | ')}`);
 });
 
 scanner.on('closed', (s) => {
@@ -170,7 +178,9 @@ const server = http.createServer(guardedHandler({
         lastTick: scanner.lastTick,
         pairs: scanner.tickers.size,
         threshold: scanner.threshold,
+        breakout: scanner.breakout,
         signals: scanner.signals,
+        skipped: scanner.skipped,
       });
     }
     send(404, { error: 'Not found. Try /api/catcher' });

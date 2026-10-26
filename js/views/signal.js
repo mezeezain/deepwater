@@ -2,7 +2,7 @@
 import { getPumps } from '../pump-app.js';
 import { demoSignalCandles } from '../demo-market.js';
 import { priceChart } from '../chart.js';
-import { metrics, pairHistory } from '../pump.js';
+import { metrics, pairHistory, checkText } from '../pump.js';
 import { h, ticker, fmtPrice, fmtPct, fmtUsd, signClass, fill, riskNote, store } from '../util.js';
 import { fmtDuration, fmtDip } from './pumps.js';
 
@@ -28,6 +28,7 @@ export function signalView(root, { id, go }) {
   const chartBox = h('div.chart');
   const life = h('div.facts');
   const whales = h('div.facts');
+  const why = h('ul.checks');
   const history = h('div');
 
   fill(root,
@@ -39,9 +40,9 @@ export function signalView(root, { id, go }) {
       h('section.panel.grow',
         h('div.toolbar', h('h2', 'Price around the alert'), frames),
         chartBox,
-        h('div.legend', h('span.key.alert', 'Alert'), h('span.key.peak', 'Peak'), h('span.key.start', 'Start price (24h low)')),
+        h('div.legend', h('span.key.alert', 'Alert'), h('span.key.peak', 'Peak'), h('span.key.start', 'Start price (24h low)'), h('span.key.range', 'Earlier 40-day high')),
         h('p.note', 'Growth is measured from the alert price, the moment the scanner flagged the move. It is the move after detection, not a trade result.')),
-      h('aside.panel.side', h('h2', 'Signal'), life, h('h2', 'Whales at the alert'), whales),
+      h('aside.panel.side', h('h2', 'Why it qualified'), why, h('h2', 'Signal'), life, h('h2', 'Whales at the alert'), whales),
     ),
     h('section.panel', h('h2', 'Signal history for this pair'), history),
   );
@@ -85,6 +86,11 @@ export function signalView(root, { id, go }) {
         row('Open interest', sig.oiUsd == null ? '–' : fmtUsd(sig.oiUsd)),
         sig.status === 'CLOSED' && h('p.read', `Closed: ${sig.closeReason}.`),
       );
+      const b = sig.breakout;
+      fill(why, b?.checks?.length
+        ? b.checks.map((c) => h(`li.${c.ok ? 'good' : 'bad'}`, h('span.mark', { 'aria-hidden': 'true' }, c.ok ? '✓' : '✕'), h('span', c.label), h('span.muted', checkText(c))))
+        : h('li.neutral', h('span.mark', '–'), h('span', 'Recorded before the first-breakout filter'), h('span')));
+      if (b?.rangeHigh) why.append(h('li.neutral', h('span.mark', '·'), h('span', '40-day range'), h('span.muted', `${fmtPrice(b.rangeLow)} – ${fmtPrice(b.rangeHigh)}`)));
       const w = sig.whale;
       fill(whales, w
         ? [
@@ -135,6 +141,7 @@ export function signalView(root, { id, go }) {
         levels: [
           { price: sig.alertPrice, label: 'Alert', color: '--accent' },
           { price: sig.startPrice, label: '24h low', color: '--muted' },
+          ...(sig.breakout?.rangeHigh ? [{ price: sig.breakout.rangeHigh, label: '40-day high', color: '--whale' }] : []),
           ...(sig.peakPrice > sig.alertPrice * 1.005 ? [{ price: sig.peakPrice, label: 'Peak', color: '--long' }] : []),
         ],
       });

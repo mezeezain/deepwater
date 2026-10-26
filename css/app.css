@@ -506,6 +506,9 @@ table.pumps td, table.pumps th { white-space: nowrap; }
 table.pumps tbody tr { cursor: pointer; }
 table.pumps tbody tr:hover, table.pumps tbody tr:focus-visible { background: var(--raised); }
 .key.start::before { background: var(--muted); }
+.key.range::before { background: var(--whale); }
+table.skipped td.reasons, table.skipped th:last-child { white-space: normal; text-align: left; }
+.reason { display: inline-block; font-size: 12px; padding: 3px 7px; margin: 2px 4px 2px 0; border-radius: 4px; background: var(--short-soft); color: var(--short); }
 .token-title .perp { font-size: 13px; font-weight: 500; letter-spacing: 0.04em; align-self: center; }
 .sig-history { list-style: none; margin: 0 0 8px; padding: 0; }
 .sig-history li { display: grid; grid-template-columns: minmax(110px, 1fr) repeat(3, auto) auto; gap: 6px 16px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }

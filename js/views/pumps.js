@@ -1,7 +1,7 @@
 // Pump Catcher: every Binance USDT perpetual, flagged the moment it rises 27% off its rolling 24h low,
 // then followed: gain now, peak, time to peak and the dip before the peak.
 import { getPumps, alertPrefs, beep, pumpMode } from '../pump-app.js';
-import { metrics, selectRows, headerStats, AT_PEAK_PCT, KEEP_DAYS } from '../pump.js';
+import { metrics, selectRows, headerStats, checkText, BREAKOUT, AT_PEAK_PCT, KEEP_DAYS } from '../pump.js';
 import { h, ticker, fmtPrice, fmtPct, fmtUsd, fmtAgo, signClass, csv, copyText, toast, store, fill, riskNote } from '../util.js';
 
 const PAGE = 15;
@@ -42,6 +42,7 @@ export function pumpsView(root, { go }) {
   const more = h('button.btn.ghost', { type: 'button', onclick: () => { shown += PAGE; render(); } });
   const foot = h('p.note');
   const alerts = h('div.controls.alert-prefs');
+  const skippedBox = h('div');
 
   const persist = () => store.set('pump-view', opts);
   const set = (patch) => { Object.assign(opts, patch); shown = PAGE; persist(); render(); };
@@ -52,7 +53,7 @@ export function pumpsView(root, { go }) {
       h('div.hero-text',
         h('p.eyebrow', 'Every Binance USDT perpetual · live prices'),
         h('h1', 'Pump catcher'),
-        h('p.lede', 'Flags the moment a pair rises 27% off its rolling 24-hour low, then follows the move: gain now, peak, time to peak and the dip before the peak.'),
+        h('p.lede', 'Only first breakouts: coins that had not pumped before, breaking out of a quiet range to a new 40-day high on heavy volume, flagged the moment they rise 27% off their 24-hour low. Coins that already pumped, dumped and are bouncing again are filtered out.'),
       ),
       pulse,
     ),
@@ -64,6 +65,10 @@ export function pumpsView(root, { go }) {
       h('div.table-foot', more, foot),
       h('p.note', 'Percentages track price movement after detection. They are not trading results, and not every caught pump keeps rising: some reverse soon after the alert.'),
     ),
+    h('section.panel',
+      h('h2', 'Filtered out, last 24 hours'),
+      h('p.note', 'Pairs that rose 27% off their 24h low but are not first breakouts, with the reasons. No alert was sent for these.'),
+      skippedBox),
     h('div.split',
       h('section.panel.grow', h('h2', 'How a signal fires'), explainer()),
       h('section.panel.side', h('h2', 'Alerts'),
@@ -77,8 +82,16 @@ export function pumpsView(root, { go }) {
     return h('ol.steps',
       h('li', h('strong', 'Watch every pair. '), 'All Binance USDT-margined perpetual futures, from the live all-market ticker stream.'),
       h('li', h('strong', 'Track the rolling 24h low. '), 'Each pair’s lowest price of the last 24 hours is the baseline, shown as the start price.'),
-      h('li', h('strong', 'Fire on the rebound. '), 'When price climbs 27% above that low (1.27× the start price), an alert fires. The first price seen at or past the line is the alert price. A pair already above the line when scanning starts waits for its next crossing.'),
-      h('li', h('strong', 'Follow the move. '), 'Gain now, the peak since the alert, time to peak, and the deepest dip before the peak. A pair can fire again after 24 hours, or sooner off a fresh, lower 24h low.'),
+      h('li', h('strong', 'Trigger. '), 'When price climbs 27% above that low (1.27× the start price), the pair is checked. A pair already above the line when scanning starts waits for its next crossing.'),
+      h('li', h('strong', 'First breakout only. '), `An alert fires only if, on 1-hour candles over the previous ${BREAKOUT.lookbackDays} days (the last 24 hours, the move itself, left out): `,
+        h('ul',
+          h('li', `it never rose ${BREAKOUT.maxPriorRise}% or more within any 24 hours (no earlier pump);`),
+          h('li', `price is above that period’s highest high (a new ${BREAKOUT.lookbackDays}-day high, not a bounce back into an old range);`),
+          h('li', `the range was flat: its high at most ${BREAKOUT.maxBaseRange}% above its low;`),
+          h('li', `the last 24 hours traded at least ${BREAKOUT.minVolMult}× the volume of a normal day;`),
+          h('li', `the pair has at least ${BREAKOUT.minHistoryDays} days of history (fresh listings are skipped).`)),
+        'The alert price is the first price seen at or past the line.'),
+      h('li', h('strong', 'Follow the move. '), 'Gain now, the peak since the alert, time to peak, and the deepest dip before the peak. Because of the rules above, a pair that has already been alerted cannot alert again until the earlier pump has left its 40-day window.'),
       h('li', h('strong', 'Close. '), `A signal stays active until price falls back to the 24h low it started from, a new signal fires on the same pair, or ${KEEP_DAYS} days pass. The log keeps ${KEEP_DAYS} days.`),
     );
   }
@@ -161,6 +174,7 @@ export function pumpsView(root, { go }) {
           h('option', { value: 'volume', selected: opts.sort === 'volume' }, 'Volume 24h'))),
     ]);
 
+    renderSkipped(now);
     const rows = selectRows(scanner.signals, opts, now);
     const visible = rows.slice(0, shown);
     more.hidden = rows.length <= shown;
@@ -198,6 +212,27 @@ export function pumpsView(root, { go }) {
         h('tbody', visible.length ? visible.map((s) => logRow(s, now)) : h('tr', h('td.empty', { colSpan: 6 }, emptyText()))),
       ));
     }
+  }
+
+  function renderSkipped(now) {
+    const list = (scanner.skipped ?? []).filter((x) => now - x.t < 86_400_000);
+    if (!scanner.breakout && scanner.mode === 'shared') {
+      fill(skippedBox, h('p.empty', 'Your server is still running the scanner without the first-breakout filter. Update it to use these rules.'));
+      return;
+    }
+    if (!list.length) {
+      fill(skippedBox, h('p.empty', scanner.mode === 'shared' ? 'Nothing filtered out in the last 24 hours (the list restarts when the server restarts).' : 'Nothing filtered out since this page started scanning.'));
+      return;
+    }
+    fill(skippedBox, h('div.table-wrap', h('table.grid.skipped',
+      h('thead', h('tr', ...['Time', 'Token', 'Price', 'Why it was skipped'].map((t) => h('th', { scope: 'col' }, t)))),
+      h('tbody', ...list.slice(0, 40).map((x) => h('tr',
+        h('td.num.muted', { title: new Date(x.t).toLocaleString() }, fmtAgo(x.t)),
+        h('th.pair', { scope: 'row' }, h('a', { href: `#${x.symbol}` }, h('span.pair-name', ticker(x.symbol)))),
+        h('td.num', fmtPrice(x.price)),
+        h('td.reasons', ...x.checks.filter((c) => !c.ok).map((c) => h('span.reason', c.id === 'error' ? 'Could not load price history' : checkText(c)))),
+      ))),
+    )));
   }
 
   function emptyText() {

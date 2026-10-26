@@ -6,9 +6,11 @@
 //   2. Track each pair's rolling 24-hour low. That low is the signal's START PRICE.
 //   3. Fire when price rises THRESHOLD % above that low (1.27× by default). The first observed price at or
 //      past the line is the ALERT PRICE, so alert ÷ start is 1.27 or a little more.
-//   4. Follow the move: gain now, peak since the alert, time to peak, and the dip before the peak.
-// There is no score, no order-flow filter and no exit rule for trading: the percentages measure what the
-// price did after detection, not trading results.
+//   4. First-breakout filter (firstBreakout below): only coins that had NOT pumped before, breaking out of a
+//      flat base to a new 40-day high on strong volume. Pump-dump-and-bounce coins are filtered out.
+//   5. Follow the move: gain now, peak since the alert, time to peak, and the dip before the peak.
+// There is no exit rule for trading: the percentages measure what the price did after detection,
+// not trading results.
 
 export const THRESHOLD = 27; // % above the rolling 24h low
 export const AT_PEAK_PCT = 5; // "At peak": price within this % of the post-alert peak
@@ -16,6 +18,20 @@ export const KEEP_DAYS = 30; // log window, and the longest a signal is tracked
 export const REARM_MS = 24 * 3_600_000; // a pair can fire again after 24h, or sooner from a lower 24h low
 
 const DAY = 86_400_000;
+const HOUR = 3_600_000;
+
+/**
+ * First-breakout rules, checked on 1-hour candles when a pair crosses the trigger. The "base" is the history
+ * before the current move: up to lookbackDays, ending 24 hours before the alert (the move itself lives in the
+ * last 24 hours).
+ *   minHistoryDays  enough history to judge (fresh listings usually pump on day one, so they are skipped)
+ *   maxPriorRise    no earlier pump: in the base, price never rose this % within any 24 hours
+ *   maxBaseRange    a flat base: the base's high is at most this % above its low
+ *   minVolMult      breakout on volume: 24h volume at least this multiple of the base's average day
+ * and price must be above the base's highest high: a first breakout to a new 40-day high, not a bounce
+ * back into an old range.
+ */
+export const BREAKOUT = { lookbackDays: 40, minHistoryDays: 14, maxPriorRise: 27, maxBaseRange: 60, minVolMult: 2 };
 const pct = (a, b) => ((a - b) / b) * 100;
 
 /** % rise of `price` above `low`, or null when either is unusable. */
@@ -48,9 +64,11 @@ export function shouldFire(arm, tk, last = null, t = tk.t, threshold = THRESHOLD
   return true;
 }
 
-export function createSignal({ symbol, price, low24h, t, volume24h = null, threshold = THRESHOLD }) {
+export function createSignal({ symbol, price, low24h, t, volume24h = null, threshold = THRESHOLD, breakout = null }) {
   return {
     id: `${symbol}-${t}`,
+    rules: 2, // 2 = with the first-breakout filter
+    breakout, // { rangeHigh, rangeLow, priorRise, baseRange, volMult, days, checks }
     symbol,
     status: 'TRACKING',
     threshold,
@@ -107,6 +125,58 @@ export function replayCandles(sig, candles) {
     path.forEach((p, i) => updateSignal(sig, p, Math.max(sig.lastT, k.t + i * 15_000)));
   }
   return sig;
+}
+
+/**
+ * Checks a pair against the first-breakout rules.
+ * candles: 1-hour candles [{ t, h, l, v }] (v = quote volume, USDT), oldest first, ending at the alert.
+ * at: { price, t, volume24h } for the moment of the alert.
+ * Returns { pass, checks: [{ id, label, value, ok }], rangeHigh, rangeLow, priorRise, baseRange, volMult, days }.
+ */
+export function firstBreakout(candles, { price, t, volume24h }, cfg = BREAKOUT) {
+  const from = t - (cfg.lookbackDays + 1) * DAY;
+  const to = t - DAY;
+  const base = candles.filter((k) => k.t >= from && k.t + HOUR <= to && k.h > 0 && k.l > 0);
+  const days = base.length / 24;
+  let rangeHigh = null;
+  let rangeLow = null;
+  let priorRise = 0;
+  let vol = 0;
+  for (let i = 0; i < base.length; i++) {
+    const k = base[i];
+    rangeHigh = rangeHigh == null ? k.h : Math.max(rangeHigh, k.h);
+    rangeLow = rangeLow == null ? k.l : Math.min(rangeLow, k.l);
+    vol += k.v || 0;
+    // Largest rise inside any 24-hour window: this hour's high against the lowest low of the 24 hours up to it.
+    let low = k.l;
+    for (let j = Math.max(0, i - 23); j < i; j++) if (base[j].l < low) low = base[j].l;
+    priorRise = Math.max(priorRise, pct(k.h, low));
+  }
+  const baseRange = rangeHigh && rangeLow ? pct(rangeHigh, rangeLow) : null;
+  const avgDay = days > 0 ? vol / days : null;
+  const volMult = avgDay > 0 && volume24h > 0 ? volume24h / avgDay : null;
+  const aboveHigh = rangeHigh ? pct(price, rangeHigh) : null;
+  const checks = [
+    { id: 'history', label: `At least ${cfg.minHistoryDays} days of history`, value: days, ok: days >= cfg.minHistoryDays },
+    { id: 'fresh', label: `No earlier pump in ${cfg.lookbackDays} days`, value: base.length ? priorRise : null, ok: base.length > 0 && priorRise < cfg.maxPriorRise },
+    { id: 'breakout', label: `First break above its ${cfg.lookbackDays}-day high`, value: aboveHigh, ok: aboveHigh != null && aboveHigh > 0 },
+    { id: 'base', label: 'Out of a flat base', value: baseRange, ok: baseRange != null && baseRange <= cfg.maxBaseRange },
+    { id: 'volume', label: `Volume at least ${cfg.minVolMult}× a normal day`, value: volMult, ok: volMult != null && volMult >= cfg.minVolMult },
+  ];
+  return { pass: checks.every((c) => c.ok), checks, rangeHigh, rangeLow, priorRise: base.length ? priorRise : null, baseRange, volMult, days };
+}
+
+/** Short reason text for a failed check, for lists and logs. */
+export function checkText(c) {
+  const f = (v, d = 0) => (v == null ? '–' : v.toFixed(d));
+  switch (c.id) {
+    case 'history': return c.ok ? `${f(c.value)} days of history` : `Only ${f(c.value, 1)} days of history`;
+    case 'fresh': return c.ok ? `Biggest earlier 24h rise +${f(c.value)}%` : `Already pumped +${f(c.value)}% in 24h before`;
+    case 'breakout': return c.value == null ? 'No range high' : c.ok ? `+${f(c.value, 1)}% above the range high` : `${f(c.value, 1)}% below its earlier high`;
+    case 'base': return c.ok ? `Base range ${f(c.value)}%` : `Choppy base: ${f(c.value)}% range`;
+    case 'volume': return c.value == null ? 'Volume unknown' : `Volume ${f(c.value, 1)}× a normal day`;
+    default: return c.label;
+  }
 }
 
 /** Every derived number the tables show. */
@@ -198,5 +268,7 @@ export function whaleContext(sum, price, now = Date.now()) {
 /** Shape check for a signal received from a server: everything the pages read must be a usable number. */
 export function validSignal(s) {
   return !!s && typeof s.id === 'string' && /^[A-Z0-9一-鿿]{1,30}USDT$/.test(s.symbol) && (s.status === 'TRACKING' || s.status === 'CLOSED') &&
-    ['startPrice', 'alertPrice', 'lastPrice', 'peakPrice', 'alertT', 'lastT', 'peakT'].every((k) => Number.isFinite(s[k]) && s[k] > 0);
+    ['startPrice', 'alertPrice', 'lastPrice', 'peakPrice', 'alertT', 'lastT', 'peakT'].every((k) => Number.isFinite(s[k]) && s[k] > 0) &&
+    (s.breakout == null || (['rangeHigh', 'rangeLow', 'priorRise', 'baseRange', 'volMult', 'days'].every((k) => s.breakout[k] == null || Number.isFinite(s.breakout[k])) &&
+      (s.breakout.checks == null || (Array.isArray(s.breakout.checks) && s.breakout.checks.every((c) => c && typeof c.id === 'string' && (c.value == null || Number.isFinite(c.value)))))));
 }

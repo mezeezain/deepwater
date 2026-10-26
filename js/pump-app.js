@@ -107,6 +107,8 @@ class SharedPumps {
     const known = new Set((this.signals || []).map((s) => s.id));
     this.signals = (Array.isArray(body.signals) ? body.signals : []).filter(validSignal);
     this.threshold = Number.isFinite(body.threshold) ? body.threshold : THRESHOLD;
+    this.breakout = body.breakout && typeof body.breakout === 'object' ? body.breakout : null;
+    this.skipped = (Array.isArray(body.skipped) ? body.skipped : []).filter(validSkip);
     this.state = body.state;
     this.lastTick = body.lastTick;
     this.startedAt = body.startedAt;
@@ -140,6 +142,9 @@ class SharedPumps {
     this.listeners.get(event)?.forEach((fn) => fn(payload));
   }
 }
+
+const validSkip = (x) => !!x && /^[A-Z0-9一-鿿]{1,30}USDT$/.test(x.symbol) && Number.isFinite(x.t) && Number.isFinite(x.price) && Array.isArray(x.checks) &&
+  x.checks.every((c) => c && typeof c.id === 'string' && typeof c.ok === 'boolean' && (c.value == null || Number.isFinite(c.value)));
 
 async function fetchJson(url) {
   const ctrl = new AbortController();

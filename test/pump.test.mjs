@@ -1,7 +1,7 @@
 // Run with: node --test
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { THRESHOLD, shouldFire, createSignal, updateSignal, replayCandles, metrics, selectRows, headerStats, atPeak, pairHistory, triggerPrice, validSignal } from '../js/pump.js';
+import { THRESHOLD, BREAKOUT, firstBreakout, checkText, shouldFire, createSignal, updateSignal, replayCandles, metrics, selectRows, headerStats, atPeak, pairHistory, triggerPrice, validSignal } from '../js/pump.js';
 import { PumpScanner } from '../js/pump-scanner.js';
 
 const H = 3_600_000;
@@ -125,7 +125,7 @@ function rig({ signals = [], whaleLookup = null } = {}) {
     async getCandles1m() { return []; },
     async getOpenInterest() { return 1000; },
   };
-  const sc = new PumpScanner({ source, store: { load: () => signals, save: (s) => saved.push(s.length) }, now: () => t, whaleLookup });
+  const sc = new PumpScanner({ source, store: { load: () => signals, save: (s) => saved.push(s.length) }, now: () => t, whaleLookup, breakout: null });
   return { sc, tick: (batch, dt = 1000) => { t += dt; sc.ingest(batch); }, saved };
 }
 
@@ -171,6 +171,14 @@ test('scanner: old-format signals from the previous scanner are ignored', () => 
   assert.equal(sc.signals.length, 0);
 });
 
+test('scanner: with the filter on, alerts recorded before it existed are dropped', () => {
+  const old = createSignal({ symbol: 'LYNUSDT', price: 1.27, low24h: 1, t: 1_000_000 });
+  delete old.rules;
+  const kept = createSignal({ symbol: 'ZECUSDT', price: 1.27, low24h: 1, t: 1_000_000 });
+  const sc = new PumpScanner({ source: {}, store: { load: () => [old, kept], save() {} }, now: () => 1_000_000 });
+  assert.deepEqual(sc.signals.map((s) => s.symbol), ['ZECUSDT']);
+});
+
 test('scanner: keeps scanning over REST when the ticker stream is silent', async () => {
   let t = 1_000_000;
   let polls = 0;
@@ -180,7 +188,7 @@ test('scanner: keeps scanning over REST when the ticker stream is silent', async
     async getTickers() { polls++; return [tk(1.3, 1, 0, 'ZECUSDT')]; },
     async getCandles1m() { return []; },
   };
-  const sc = new PumpScanner({ source, store: { load: () => [], save() {} }, now: () => t });
+  const sc = new PumpScanner({ source, store: { load: () => [], save() {} }, now: () => t, breakout: null });
   await sc.start();
   await sc.pollIfStale();
   assert.equal(polls, 0, 'stream only just opened');
@@ -190,4 +198,105 @@ test('scanner: keeps scanning over REST when the ticker stream is silent', async
   assert.equal(sc.state, 'polling');
   assert.equal(sc.signals.length, 1, 'the crossing is caught from the REST poll');
   sc.stop();
+});
+
+// ---- first-breakout filter
+
+const NOW = 100 * 24 * H;
+/** Hourly candles for `days` days up to NOW: a flat range around 1.0 (±5%), optional earlier spike, today's pump. */
+function history({ days = 45, spikeDaysAgo = null, spike = 1.6, drift = 0, vol = 1000 } = {}) {
+  const out = [];
+  const start = NOW - days * 24 * H;
+  for (let t = start, i = 0; t < NOW; t += H, i++) {
+    const daysAgo = (NOW - t) / (24 * H);
+    let c = 1 + 0.05 * Math.sin(i / 7) + drift * (1 - daysAgo / days);
+    if (spikeDaysAgo != null && Math.abs(daysAgo - spikeDaysAgo) < 0.5) c *= spike;
+    out.push({ t, o: c, h: c * 1.005, l: c * 0.995, c, v: vol });
+  }
+  return out;
+}
+const at = (price, volume24h = 24 * 1000 * 3) => ({ price, t: NOW, volume24h });
+
+test('firstBreakout: a quiet coin breaking its 40-day high on 3x volume passes', () => {
+  const r = firstBreakout(history(), at(1.35));
+  assert.equal(r.pass, true, JSON.stringify(r.checks));
+  assert.ok(r.priorRise < 15);
+  assert.ok(r.baseRange < 15);
+  assert.equal(Math.round(r.volMult), 3);
+  assert.ok(r.rangeHigh > 1.04 && r.rangeHigh < 1.06);
+});
+
+test('firstBreakout: a coin that pumped before is filtered out', () => {
+  const r = firstBreakout(history({ spikeDaysAgo: 12 }), at(1.35));
+  assert.equal(r.pass, false);
+  const failed = r.checks.filter((c) => !c.ok).map((c) => c.id);
+  assert.ok(failed.includes('fresh'), 'earlier pump');
+  assert.ok(failed.includes('breakout'), 'still below the earlier pump high');
+  assert.match(checkText(r.checks.find((c) => c.id === 'fresh')), /Already pumped/);
+});
+
+test('firstBreakout: pumped, dumped and bouncing back into the old range is filtered out', () => {
+  // Spike to 1.6 twenty days ago, back to ~1.0, now 1.27 off a 24h low near 1.0: below the old high.
+  const r = firstBreakout(history({ spikeDaysAgo: 20 }), at(1.28));
+  assert.equal(r.pass, false);
+  assert.equal(r.checks.find((c) => c.id === 'breakout').ok, false);
+});
+
+test('firstBreakout: weak volume, a steady uptrend and a fresh listing each fail', () => {
+  assert.equal(firstBreakout(history(), at(1.35, 24 * 1000 * 1.2)).checks.find((c) => c.id === 'volume').ok, false);
+  const trend = firstBreakout(history({ drift: 0.9 }), at(2.4));
+  assert.equal(trend.checks.find((c) => c.id === 'base').ok, false, 'already ran 90%: not a flat base');
+  const fresh = firstBreakout(history({ days: 8 }), at(1.35));
+  assert.equal(fresh.checks.find((c) => c.id === 'history').ok, false);
+  assert.equal(fresh.pass, false);
+});
+
+test('firstBreakout: the last 24 hours (the move itself) are not part of the base', () => {
+  const k = history();
+  k[k.length - 3].h = 1.3; // today's move already touched 1.3 an hour ago
+  const r = firstBreakout(k, at(1.35));
+  assert.equal(r.pass, true);
+  assert.ok(r.rangeHigh < 1.1);
+  assert.equal(BREAKOUT.lookbackDays, 40);
+});
+
+function filterRig(candles) {
+  let t = NOW;
+  const source = {
+    async getUniverse() { return []; },
+    streamTickers() { return () => {}; },
+    async getCandles() { return candles; },
+    async getCandles1m() { return []; },
+  };
+  const sc = new PumpScanner({ source, store: { load: () => [], save() {} }, now: () => t });
+  return { sc, tick: (batch) => { t += 1000; sc.ingest(batch); } };
+}
+
+test('scanner: alerts a first breakout and records the checks', async () => {
+  const { sc, tick } = filterRig(history());
+  tick([{ ...tk(1.0, 1.0, 0, 'NEWUSDT'), quoteVolume: 72000 }]);
+  tick([{ ...tk(1.28, 1.0, 0, 'NEWUSDT'), quoteVolume: 72000 }]);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(sc.signals.length, 1);
+  assert.equal(sc.signals[0].rules, 2);
+  assert.equal(sc.signals[0].breakout.checks.every((c) => c.ok), true);
+});
+
+test('scanner: a repeat pumper is skipped, listed with its reasons, and not re-checked for an hour', async () => {
+  let fetches = 0;
+  const { sc, tick } = filterRig(history({ spikeDaysAgo: 12 }));
+  const get = sc.source.getCandles;
+  sc.source.getCandles = (...a) => { fetches++; return get(...a); };
+  const skips = [];
+  sc.on('skipped', (s) => skips.push(s));
+  tick([{ ...tk(1.0, 1.0, 0, 'OLDUSDT'), quoteVolume: 72000 }]);
+  tick([{ ...tk(1.28, 1.0, 0, 'OLDUSDT'), quoteVolume: 72000 }]);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(sc.signals.length, 0);
+  assert.equal(skips.length, 1);
+  assert.equal(sc.skipped[0].symbol, 'OLDUSDT');
+  tick([{ ...tk(1.2, 1.0, 0, 'OLDUSDT'), quoteVolume: 72000 }]);
+  tick([{ ...tk(1.3, 1.0, 0, 'OLDUSDT'), quoteVolume: 72000 }]);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(fetches, 1, 'memo: no second history fetch within the hour');
 });

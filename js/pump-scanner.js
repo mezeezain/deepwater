@@ -1,29 +1,38 @@
 // Pump Catcher scanner loop around pump.js. Environment-agnostic: the browser and the Node server
 // pass in a data source (js/binance.js or the demo market), a store for signals, and listen for events.
-//   events: 'alert' (new signal), 'closed' (signal stopped tracking), 'change' (anything else)
-import { shouldFire, createSignal, updateSignal, closeSignal, replayCandles, whaleContext, KEEP_DAYS, THRESHOLD } from './pump.js';
+//   events: 'alert' (new signal), 'closed' (signal stopped tracking), 'skipped' (crossed the trigger but failed
+//   the first-breakout rules), 'change' (anything else)
+import { shouldFire, createSignal, updateSignal, closeSignal, replayCandles, whaleContext, firstBreakout, BREAKOUT, KEEP_DAYS, THRESHOLD } from './pump.js';
 
 const OI_EVERY_MS = 5 * 60_000; // open interest for tracked pairs
 const STALE_MS = 20_000; // no stream data for this long: poll REST until the stream is back
 const POLL_MS = 10_000;
 const OI_CONCURRENCY = 4;
 const MAX_SIGNALS = 3000;
+const SKIP_KEEP_MS = 24 * 3_600_000; // filtered-out crossings are listed for a day
+const SKIP_MEMO_MS = 60 * 60_000; // don't re-check a filtered-out pair for an hour
 
 export class PumpScanner {
   /**
-   * source: getUniverse(), streamTickers(onBatch, onState), getCandles1m(symbol, startTime), getOpenInterest(symbol)
+   * source: getUniverse(), getTickers(), streamTickers(onBatch, onState), getCandles(symbol, interval, startTime, limit),
+   *         getCandles1m(symbol, startTime), getOpenInterest(symbol)
    * store: { load() -> signals[], save(signals) }
    * whaleLookup (optional): async symbol -> Binance Smart Money summary, attached to alerts as context.
    */
-  constructor({ source, store, now = () => Date.now(), whaleLookup = null, threshold = THRESHOLD }) {
+  constructor({ source, store, now = () => Date.now(), whaleLookup = null, threshold = THRESHOLD, breakout = BREAKOUT }) {
     this.source = source;
     this.store = store;
     this.now = now;
     this.whaleLookup = whaleLookup;
     this.threshold = threshold;
+    this.breakout = breakout; // null switches the first-breakout filter off
     this.tickers = new Map();
     this.arms = new Map(); // symbol -> { below }
-    this.signals = (store.load() || []).filter((s) => s && s.startPrice > 0 && this.now() - s.alertT < KEEP_DAYS * 86_400_000);
+    this.checking = new Set(); // pairs whose history is being fetched
+    this.skipped = []; // recent crossings that failed the filter, newest first
+    // Alerts recorded before the first-breakout filter existed (no rules: 2) are dropped: they are the
+    // pump-dump-and-bounce alerts the filter is there to remove.
+    this.signals = (store.load() || []).filter((s) => s && s.startPrice > 0 && (s.rules === 2 || !breakout) && this.now() - s.alertT < KEEP_DAYS * 86_400_000);
     this.index();
     this.listeners = new Map();
     this.state = 'starting';
@@ -131,13 +140,53 @@ export class PumpScanner {
       }
       let arm = this.arms.get(tk.symbol);
       if (!arm) this.arms.set(tk.symbol, (arm = {}));
-      if (shouldFire(arm, tk, this.lastSignal(tk.symbol), t, this.threshold)) this.fire(tk, t);
+      if (shouldFire(arm, tk, this.lastSignal(tk.symbol), t, this.threshold)) {
+        if (this.breakout) this.consider(tk, t);
+        else this.fire(tk, t);
+      }
     }
     if (touched) this.saveSoon();
     this.emit('change');
   }
 
-  fire(tk, t) {
+  /** A pair crossed the trigger: fetch its history and alert only if it is a first breakout. */
+  async consider(tk, t) {
+    const { symbol } = tk;
+    if (this.checking.has(symbol)) return;
+    const memo = this.skipped.find((x) => x.symbol === symbol);
+    if (memo && t - memo.t < SKIP_MEMO_MS) return;
+    this.checking.add(symbol);
+    try {
+      let candles = null;
+      for (let attempt = 0; attempt < 3 && !candles; attempt++) {
+        try {
+          candles = await this.source.getCandles(symbol, '1h', t - (this.breakout.lookbackDays + 2) * 86_400_000, 1000);
+        } catch {
+          if (attempt < 2) await new Promise((r) => setTimeout(r, 3000));
+        }
+      }
+      const at = { price: tk.price, t, volume24h: tk.quoteVolume ?? null };
+      const res = candles ? firstBreakout(candles, at, this.breakout) : null;
+      if (res?.pass) {
+        this.fire(tk, t, { rangeHigh: res.rangeHigh, rangeLow: res.rangeLow, priorRise: res.priorRise, baseRange: res.baseRange, volMult: res.volMult, days: res.days, checks: res.checks });
+        return;
+      }
+      const skip = {
+        symbol,
+        t,
+        price: tk.price,
+        low24h: tk.low24h,
+        checks: res?.checks ?? [{ id: 'error', label: 'Could not load price history', value: null, ok: false }],
+      };
+      this.skipped = [skip, ...this.skipped.filter((x) => x.symbol !== symbol && t - x.t < SKIP_KEEP_MS)].slice(0, 300);
+      this.emit('skipped', skip);
+      this.emit('change');
+    } finally {
+      this.checking.delete(symbol);
+    }
+  }
+
+  fire(tk, t, breakout = null) {
     // A new move on the pair takes over from any earlier one still being tracked.
     for (const s of this.bySymbol.get(tk.symbol) ?? []) {
       if (s.status === 'TRACKING') {
@@ -145,7 +194,7 @@ export class PumpScanner {
         this.emit('closed', s);
       }
     }
-    const sig = createSignal({ symbol: tk.symbol, price: tk.price, low24h: tk.low24h, t, volume24h: tk.quoteVolume ?? null, threshold: this.threshold });
+    const sig = createSignal({ symbol: tk.symbol, price: tk.price, low24h: tk.low24h, t, volume24h: tk.quoteVolume ?? null, threshold: this.threshold, breakout });
     this.signals.unshift(sig);
     this.index();
     this.save();

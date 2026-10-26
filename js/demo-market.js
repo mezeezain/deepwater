@@ -39,6 +39,7 @@ export function createDemoMarket({ now = () => Date.now(), seed = 7, tickMs = 10
       rate: 0,
       fake: false,
       lastPumpT: 0,
+      pumpedBefore: r() < 0.4, // demo history: 40% of pairs had an earlier pump, so the first-breakout filter has work to do
       path: [], // [{ t, price }] for charts and catch-up
     };
   });
@@ -121,9 +122,33 @@ export function createDemoMarket({ now = () => Date.now(), seed = 7, tickMs = 10
 
     async getCandles(symbol, interval, startTime) {
       const ms = { '1m': 60_000, '5m': 300_000, '15m': 900_000, '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000 }[interval] || 60_000;
-      return candlesFrom(bySymbol.get(symbol)?.path || [], ms, startTime);
+      const p = bySymbol.get(symbol);
+      const recent = candlesFrom(p?.path || [], ms, startTime);
+      if (!p || !p.path.length || startTime >= p.path[0].t) return recent;
+      return [...syntheticHistory(p, ms, startTime, p.path[0].t), ...recent];
     },
   };
+}
+
+/**
+ * Invented older candles for a demo pair: a quiet range just above its 24h low, with an earlier +60% spike
+ * for pairs marked pumpedBefore. Volume is a third of today's, so a pump in a quiet pair counts as a volume
+ * breakout.
+ */
+function syntheticHistory(p, ms, from, to) {
+  const r = rand(p.symbol.length * 7919 + p.symbol.charCodeAt(0));
+  const base = p.low24h * 1.04;
+  const spikeAt = to - (12 + r() * 14) * 86_400_000;
+  const out = [];
+  let level = base;
+  for (let t = Math.floor(from / ms) * ms; t + ms <= to; t += ms) {
+    level = Math.min(base * 1.12, Math.max(base * 0.92, level * (1 + (r() - 0.5) * 0.02)));
+    const spike = p.pumpedBefore && Math.abs(t - spikeAt) < 18 * 3_600_000 ? 1 + 0.6 * (1 - Math.abs(t - spikeAt) / (18 * 3_600_000)) : 1;
+    const c = level * spike;
+    const o = c * (1 + (r() - 0.5) * 0.01);
+    out.push({ t, o, h: Math.max(o, c) * (1 + r() * 0.008), l: Math.min(o, c) * (1 - r() * 0.008), c, v: (p.quoteVolume / 3) * (ms / 86_400_000) * (0.7 + r() * 0.6) });
+  }
+  return out;
 }
 
 function candlesFrom(path, ms, startTime = 0) {
@@ -155,7 +180,16 @@ export function demoHistory(market, now = Date.now()) {
     const alertT = Math.round(now - (0.05 + r() ** 1.3 * 29.5) * 86_400_000);
     const low = +(10 ** (r() * 3 - 2)).toPrecision(5);
     const price = low * (1 + THRESHOLD / 100) * (1 + r() * 0.004); // first tick at or just past the line
-    const sig = createSignal({ symbol, price, low24h: low, t: alertT, volume24h: 2e6 + r() ** 2 * 4e8 });
+    const rangeHigh = low * (1.12 + r() * 0.1);
+    const breakout = {
+      rangeHigh,
+      rangeLow: low * (0.9 + r() * 0.08),
+      priorRise: 6 + r() * 15,
+      baseRange: 18 + r() * 35,
+      volMult: 2 + r() * 6,
+      days: 40,
+    };
+    const sig = createSignal({ symbol, price, low24h: low, t: alertT, volume24h: 2e6 + r() ** 2 * 4e8, breakout: { ...breakout, checks: demoChecks(breakout, price) } });
     sig.oiUsd = sig.volume24h * (0.15 + r() * 0.4);
     // Random walk with a pump bias of varying strength: some reverse at once, most add a little, a few run hard.
     const strength = r() < 0.3 ? -0.0006 : r() ** 3 * 0.0016;
@@ -171,6 +205,8 @@ export function demoHistory(market, now = Date.now()) {
     if (sig.status === 'TRACKING' && pair?.price > 0) {
       const k = pair.price / sig.lastPrice;
       for (const f of ['startPrice', 'alertPrice', 'lastPrice', 'peakPrice', 'lowSinceAlert', 'dipLow']) sig[f] *= k;
+      sig.breakout.rangeHigh *= k;
+      sig.breakout.rangeLow *= k;
     }
     sig.demo = true;
     out.push(sig);
@@ -183,6 +219,16 @@ export function demoHistory(market, now = Date.now()) {
     seen.add(s.symbol);
   }
   return out;
+}
+
+function demoChecks(b, price) {
+  return [
+    { id: 'history', label: 'At least 14 days of history', value: b.days, ok: true },
+    { id: 'fresh', label: 'No earlier pump in 40 days', value: b.priorRise, ok: true },
+    { id: 'breakout', label: 'First break above its 40-day high', value: ((price - b.rangeHigh) / b.rangeHigh) * 100, ok: true },
+    { id: 'base', label: 'Out of a flat base', value: b.baseRange, ok: true },
+    { id: 'volume', label: 'Volume at least 2× a normal day', value: b.volMult, ok: true },
+  ];
 }
 
 /** Candles around a demo history signal, rebuilt from its numbers. */
