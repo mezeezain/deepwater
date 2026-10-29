@@ -1,6 +1,7 @@
 // Binance USDⓈ-M futures public data, with caching, a request queue and a demo fallback.
 // Every endpoint used here is public and needs no API key.
 import * as demo from './demo.js';
+import { labDataFrom, fillGaps } from './setup-feed.js';
 import { demoSnapshots } from './smartmoney-demo.js';
 import { pickCohort, summarize } from './smartmoney.js';
 import { cleanServerUrl } from './validate.js';
@@ -304,24 +305,7 @@ export async function getLabData(symbol, interval = '1h') {
     positioningHistory('/futures/data/globalLongShortAccountRatio', symbol, interval),
     get('/fapi/v1/fundingRate', { symbol, limit: 1000 }, 10 * 60_000).catch(() => []),
   ]);
-  const slot = (ts) => Math.floor((+ts - 1) / ms) * ms;
-  const wBy = new Map(whales.map((r) => [slot(r.timestamp), +r.longAccount]));
-  const cBy = new Map(crowd.map((r) => [slot(r.timestamp), +r.longAccount]));
-  const now = Date.now();
-  const bars = klines
-    .filter((k) => k[0] + ms <= now) // closed candles only
-    .map((k) => ({
-      t: k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[7], takerBuy: +k[10],
-      whaleLong: wBy.get(k[0]) ?? null,
-      crowdLong: cBy.get(k[0]) ?? null,
-    }));
-  fillGaps(bars, ['whaleLong', 'crowdLong']);
-  const firstPos = bars.find((b) => b.whaleLong != null);
-  return {
-    bars,
-    funding: funding.map((r) => ({ t: +r.fundingTime, rate: +r.fundingRate })),
-    positioningFrom: firstPos?.t ?? null,
-  };
+  return labDataFrom({ klines, whales, crowd, funding }, ms);
 }
 
 /** Latest trade price for a few pairs: Map(symbol → price). */
@@ -350,20 +334,6 @@ async function positioningHistory(path, symbol, period) {
     end = earliest - 1;
   }
   return out;
-}
-
-/** Carry the last known value forward over short gaps (the newest candle often has no snapshot yet). */
-function fillGaps(bars, fields) {
-  for (const f of fields) {
-    let last = null;
-    let run = 0;
-    for (const b of bars) {
-      if (b[f] != null) {
-        last = b[f];
-        run = 0;
-      } else if (last != null && ++run <= 2) b[f] = last;
-    }
-  }
 }
 
 // ---------------------------------------------------------------- exact whale data (whale data server)

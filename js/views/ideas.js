@@ -1,7 +1,8 @@
 // Live setups: current trade plans for a few pairs on 15m/1h/4h, with exact levels, evidence and history.
 import { getLabData, getSmartOverview, getPrices, isDemo, CHART_INTERVALS } from '../api.js';
 import { MODELS, LAB_DEFAULTS, runLab } from '../setups.js';
-import { activeIdeas, evidence, comparable, watchLevels, priceCheck, HIGHER } from '../ideas.js';
+import { watchLevels } from '../ideas.js';
+import { collectIdeas, ideaKey, announceable } from '../setup-feed.js';
 import { beep } from '../pump-app.js';
 import { h, ticker, fmtPrice, fmtPct, signClass, toast, store, fill, visibleInterval, riskNote, copyText } from '../util.js';
 
@@ -171,38 +172,15 @@ export function ideasView(root, { go }) {
   }
 
   function collect() {
-    const all = [];
-    for (const tf of FRAMES) {
-      const pooled = symbols.flatMap((s) => data.get(`${s}|${tf}`)?.trades ?? []);
-      for (const symbol of symbols) {
-        const d = data.get(`${symbol}|${tf}`);
-        if (!d?.bars?.length) continue;
-        const higher = data.get(`${symbol}|${HIGHER[tf]}`);
-        for (const idea of activeIdeas(d.bars, LAB_DEFAULTS, CHART_INTERVALS[tf])) {
-          const ev = evidence(idea, {
-            bars: d.bars,
-            trades: d.trades,
-            pooled,
-            higherBars: higher?.bars ?? null,
-            higherFrame: HIGHER[tf],
-            smart: smart?.rows?.get(symbol)?.shown ?? null,
-            funding: d.funding,
-          });
-          const check = priceCheck(idea, prices.get(symbol));
-          all.push({ ...idea, symbol, tf, ev, hist: comparable(idea, ev.whale, pooled), check, invalid: check?.state === 'stop' || check?.state === 'target' });
-        }
-      }
-    }
-    const rank = { A: 0, B: 1, C: 2 };
-    return all.sort((a, b) => a.invalid - b.invalid || rank[a.ev.grade] - rank[b.ev.grade] || b.ev.score - a.ev.score || b.signalT - a.signalT);
+    return collectIdeas({ symbols, frames: FRAMES, data, smartFor: (symbol) => smart?.rows?.get(symbol)?.shown ?? null, priceFor: (symbol) => prices.get(symbol) });
   }
 
   function announce(ideas) {
     for (const x of ideas) {
-      const key = `${x.symbol}|${x.tf}|${x.model}|${x.side}|${x.signalT}`;
+      const key = ideaKey(x);
       if (seen.has(key)) continue;
       seen.add(key);
-      if (firstPass || !notifyOn || x.ev.grade === 'C' || x.invalid || x.state === 'running') continue;
+      if (firstPass || !notifyOn || !announceable(x)) continue;
       const text = `${ticker(x.symbol)} ${x.tf} ${MODELS[x.model].name} ${x.side > 0 ? 'long' : 'short'} · entry ${fmtPrice(x.entry)} · stop ${fmtPrice(x.stop)} · TP1 ${fmtPrice(x.tp1)}`;
       toast(`New grade ${x.ev.grade} setup: ${text}`);
       beep();

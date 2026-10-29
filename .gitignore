@@ -6,3 +6,5 @@ worker/data/
 .DS_Store
 worker/pumps.json
 worker/pumps.json.tmp
+worker/setups-sent.json
+worker/setups-sent.json.tmp

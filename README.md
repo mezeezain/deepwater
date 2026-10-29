@@ -159,6 +159,8 @@ WHALE_SERVER=http://localhost:8787 node worker/catcher.mjs
 
 It serves the shared log at `/api/catcher` (port 8788; `version: 2` in the response). On a server set up with `deploy/setup.sh`, it runs as the `catcher` service, with settings in `/etc/deepwater/catcher.env` (Telegram); restart it with `sudo systemctl restart catcher`. Each Telegram alert links to its signal page (`SITE_URL`, default the GitHub Pages site). Posting alerts to a public Telegram channel can make them look like a signal service, so check the rules where you and your subscribers live first.
 
+**Live setups on Telegram.** With Telegram configured, the same server also watches the Live setups page's pairs and posts each **new grade A or B setup** (sweep reclaim, breakout retest, regime confluence) with entry, stop, TP1–TP3, the checklist and the record of comparable past trades. It reloads each timeframe a few seconds after its candle closes, uses the same code as the page (`js/setup-feed.js`), and remembers what it sent in `worker/setups-sent.json`, so nothing is sent twice, even after a restart. On its very first start it notes the setups already live without sending them. Settings in `/etc/deepwater/catcher.env`: `SETUP_PAIRS=BTC,ETH,SOL` (up to 5), `SETUP_FRAMES=15m,1h,4h`, `SETUP_GRADES=A,B` (`A,B,C` for all), `SETUP_ALERTS=off` to stop them.
+
 To get a bot token, message @BotFather on Telegram. To get the chat ID, add the bot to your channel and send a message, then open `https://api.telegram.org/bot<token>/getUpdates`. Signals are saved to `worker/pumps.json`. Run it with `pm2`, `systemd` or a Docker container on a VPS in a region Binance serves.
 
 ### Tests
@@ -234,6 +236,8 @@ worker/catcher.mjs      Pump Catcher server: round-the-clock scanning, shared si
 js/setups.js            setups lab: indicators, setups, realistic execution, whale split (pure functions)
 tools/setups.mjs        setups lab over many pairs, from a server
 js/ideas.js             live setups: active plans, evidence grade, comparable history, trigger levels (pure functions)
+js/setup-feed.js        live setups shared by the page and the server: bars from Binance responses, collecting and grading setups
+worker/setup-alerts.mjs posts new grade A/B live setups to Telegram (runs inside worker/catcher.mjs)
 deploy/setup.sh         one-step VPS setup: both servers, firewall, DuckDNS, HTTPS
 worker/smartmoney.mjs   whale data server: polls Smart Money data, stores snapshots, serves the app
 test/*.test.mjs         Pump Catcher, indicator, router, validation and server-helper tests (`npm test` or `node --test`)

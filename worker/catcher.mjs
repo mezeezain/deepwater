@@ -8,6 +8,7 @@
 //   WHALE_SERVER=http://localhost:8787      # whale data server for alert context (default; empty to turn off)
 //
 // Optional: SIGNALS_FILE (default worker/pumps.json)
+// Live setups on Telegram (see worker/setup-alerts.mjs): SETUP_ALERTS=off, SETUP_PAIRS=BTC,ETH,SOL, SETUP_FRAMES=15m,1h,4h, SETUP_GRADES=A,B
 //
 // It also serves the shared signal log, so every device shows the same record:
 //   GET /api/catcher   status and every signal of the last 30 days
@@ -20,6 +21,7 @@ import { metrics, checkText } from '../js/pump.js';
 import { createBinanceSource, REST } from '../js/binance.js';
 import { createDemoMarket } from '../js/demo-market.js';
 import { guardedHandler, parseOrigins } from './http-util.mjs';
+import { startSetupAlerts, parseSetupConfig } from './setup-alerts.mjs';
 
 const demo = process.argv.includes('--demo');
 const file = process.env.SIGNALS_FILE || fileURLToPath(new URL('./pumps.json', import.meta.url));
@@ -153,9 +155,26 @@ scanner.on('change', () => {
   log(`${scanner.tickers.size} pairs · ${scanner.state} · ${tracking} active · ${scanner.signals.length} alerts in 30 days`);
 });
 
+// ---------------------------------------------------------------- live setups on Telegram
+const setupCfg = parseSetupConfig();
+let stopSetups = () => {};
+if (!demo && tg.token && tg.chat && setupCfg.on) {
+  stopSetups = startSetupAlerts({
+    get,
+    priceFor: (symbol) => scanner.tickers.get(symbol)?.price,
+    smartFor: async (symbol) => whaleLookup(symbol),
+    send: telegram,
+    log,
+    sentFile: process.env.SETUP_SENT_FILE || fileURLToPath(new URL('./setups-sent.json', import.meta.url)),
+    cfg: setupCfg,
+    site: SITE,
+  });
+}
+
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
     scanner.stop();
+    stopSetups();
     log('Stopped, signals saved to', file);
     process.exit(0);
   });
@@ -188,7 +207,7 @@ const server = http.createServer(guardedHandler({
 }));
 server.listen(PORT, HOST, () => log(`Shared signal log on http://${HOST}:${PORT}/api/catcher (CORS: ${ORIGINS.join(', ')})`));
 
-log(`Starting Pump Catcher (${demo ? 'demo market' : 'Binance live'})${tg.token ? ', Telegram on' : ''}`);
+log(`Starting Pump Catcher (${demo ? 'demo market' : 'Binance live'})${tg.token ? ', Telegram on' : ''}${!demo && tg.token && tg.chat && setupCfg.on ? `, live setups for ${setupCfg.pairs.map((p) => p.replace(/USDT$/, '')).join('/')} on ${setupCfg.frames.join('/')}` : ''}`);
 scanner.start().catch((err) => {
   console.error('Could not start:', err.message);
   process.exit(1);

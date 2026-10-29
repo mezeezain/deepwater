@@ -212,6 +212,11 @@ WHALE_SERVER=http://localhost:$PORT
 # signal service; check the rules where you and your subscribers live first.
 #TELEGRAM_BOT_TOKEN=
 #TELEGRAM_CHAT_ID=
+# With Telegram on, new grade A/B Live setups are posted too. Optional:
+#SETUP_PAIRS=BTC,ETH,SOL
+#SETUP_FRAMES=15m,1h,4h
+#SETUP_GRADES=A,B
+#SETUP_ALERTS=off
 ENVFILE
   sudo chmod 600 /etc/deepwater/catcher.env
 fi
