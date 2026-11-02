@@ -104,3 +104,62 @@ test('runLab: one position per setup type at a time, unfilled retests counted', 
   assert.ok(sweeps.length >= 2);
   for (let k = 1; k < sweeps.length; k++) assert.ok(sweeps[k].entryT > sweeps[k - 1].exitT);
 });
+
+// ---- candidate quality filters
+
+import { choppiness, FILTERS } from '../js/setups.js';
+
+const withFilters = (filters) => ({ ...LAB_DEFAULTS, filters });
+const sweepAt = (t, p = 100) => ({ t, o: p, h: p + 0.3, l: p - 2, c: p + 0.1, v: 2000, takerBuy: 1200 });
+
+test('filters: off by default, so existing results are unchanged', () => {
+  const bars = [...flat(40), sweepAt(40 * H)];
+  assert.deepEqual(findSetups(bars), findSetups(bars, withFilters({})));
+  assert.deepEqual(Object.keys(FILTERS).sort(), ['chop', 'costs', 'sweepCandle', 'trend', 'whales']);
+});
+
+test('filters: trend keeps a long sweep above a rising 200 EMA and drops it below a falling one', () => {
+  const up = Array.from({ length: 260 }, (_, i) => { const p = 50 + i * 0.2; return { t: i * H, o: p, h: p + 0.5, l: p - 0.5, c: p, v: 1000, takerBuy: 500 }; });
+  const pUp = up.at(-1).c;
+  // Flatten the last 20 candles so the 19-bar low sits just below price.
+  const tail = Array.from({ length: 20 }, (_, k) => ({ t: (260 + k) * H, o: pUp, h: pUp + 0.5, l: pUp - 0.5, c: pUp, v: 1000, takerBuy: 500 }));
+  const barsUp = [...up, ...tail, sweepAt(280 * H, pUp)];
+  assert.equal(findSetups(barsUp, withFilters({ trend: true })).filter((s) => s.model === 'sweep' && s.side === 1).length, 1);
+  const down = Array.from({ length: 260 }, (_, i) => { const p = 150 - i * 0.2; return { t: i * H, o: p, h: p + 0.5, l: p - 0.5, c: p, v: 1000, takerBuy: 500 }; });
+  const pDn = down.at(-1).c;
+  const tail2 = Array.from({ length: 20 }, (_, k) => ({ t: (260 + k) * H, o: pDn, h: pDn + 0.5, l: pDn - 0.5, c: pDn, v: 1000, takerBuy: 500 }));
+  const barsDn = [...down, ...tail2, sweepAt(280 * H, pDn)];
+  assert.equal(findSetups(barsDn).filter((s) => s.model === 'sweep' && s.side === 1).length, 1, 'found without the filter');
+  assert.equal(findSetups(barsDn, withFilters({ trend: true })).filter((s) => s.model === 'sweep' && s.side === 1).length, 0);
+});
+
+test('filters: clean sweep candle rejects a deep wick or a weak close', () => {
+  const ok = [...flat(40), { ...sweepAt(40 * H), l: 98.8 }]; // wick 0.7 below the low: under 1 ATR
+  assert.equal(findSetups(ok, withFilters({ sweepCandle: true })).filter((s) => s.model === 'sweep').length, 1);
+  const deep = [...flat(40), { ...sweepAt(40 * H), l: 95 }]; // wick 4.5 below the low, ATR about 1
+  assert.equal(findSetups(deep, withFilters({ sweepCandle: true })).filter((s) => s.model === 'sweep').length, 0);
+  const weak = [...flat(40), { ...sweepAt(40 * H), h: 103, c: 99.6 }]; // closes in the lower part of its range
+  assert.equal(findSetups(weak, withFilters({ sweepCandle: true })).filter((s) => s.model === 'sweep').length, 0);
+});
+
+test('filters: costs drops setups with a stop too tight for fees', () => {
+  // Tiny ranges: ATR 0.02 on a 100 price, so the stop is about 0.03% away and fees eat most of 1R.
+  const tight = Array.from({ length: 40 }, (_, i) => ({ t: i * H, o: 100, h: 100.01, l: 99.99, c: 100, v: 1000, takerBuy: 500 }));
+  tight.push({ t: 40 * H, o: 100, h: 100.005, l: 99.98, c: 100.002, v: 2000, takerBuy: 1200 });
+  assert.equal(findSetups(tight).filter((s) => s.model === 'sweep').length, 1);
+  assert.equal(findSetups(tight, withFilters({ costs: true })).filter((s) => s.model === 'sweep').length, 0);
+});
+
+test('filters: whales drops a setup when top traders lean against it', () => {
+  const bars = [...flat(40), sweepAt(40 * H)].map((b) => ({ ...b, whaleLong: 0.4, crowdLong: 0.6 }));
+  assert.equal(findSetups(bars, withFilters({ whales: true })).filter((s) => s.model === 'sweep').length, 0);
+  const agree = bars.map((b) => ({ ...b, whaleLong: 0.7, crowdLong: 0.5 }));
+  assert.equal(findSetups(agree, withFilters({ whales: true })).filter((s) => s.model === 'sweep').length, 1);
+});
+
+test('choppiness: sideways is high, a steady trend is low', () => {
+  const side = Array.from({ length: 30 }, (_, i) => ({ h: 101 + (i % 2), l: 99 - (i % 2), c: 100 + (i % 2 ? 1 : -1) }));
+  const trend = Array.from({ length: 30 }, (_, i) => ({ h: 100 + i + 0.6, l: 100 + i - 0.6, c: 100 + i + 0.5 }));
+  assert.ok(choppiness(side).at(-1) > 61);
+  assert.ok(choppiness(trend).at(-1) < 40);
+});

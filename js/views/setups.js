@@ -1,6 +1,6 @@
 // Setups lab: three structure setups replayed with realistic fills and costs, split by whale positioning.
 import { getLabData, getSmartOverview, isDemo } from '../api.js';
-import { MODELS, LAB_DEFAULTS, runLab, breakdown } from '../setups.js';
+import { MODELS, LAB_DEFAULTS, FILTERS, runLab, breakdown } from '../setups.js';
 import { normalizePair } from '../route.js';
 import { h, ticker, pairLink, fmtPrice, fmtPct, signClass, csv, copyText, toast, store, fill, riskNote } from '../util.js';
 
@@ -15,6 +15,14 @@ const fmtPf = (v) => (v == null ? '–' : v.toFixed(2));
 export function setupsView(root, { go }) {
   let frame = store.get('lab-frame', '1h');
   let pairs = store.get('lab-pairs', 'BTC, ETH, SOL');
+  let filters = store.get('lab-filters', {});
+  const filterBox = h('details.lab-filters',
+    h('summary', 'Quality filters (try them here; the live setups use none until they are shown to help)'),
+    h('div.controls', ...Object.entries(FILTERS).map(([id, f]) =>
+      h('label.check', { title: f.about },
+        h('input', { type: 'checkbox', id: `lab-f-${id}`, checked: !!filters[id], onchange: (e) => { filters = { ...filters, [id]: e.target.checked }; store.set('lab-filters', filters); run(); } }),
+        f.name))),
+    h('p.note', 'Hover a filter for what it does. Compare the numbers with and without it, and prefer the server comparison (node tools/setups.mjs --compare), which tests on many pairs and on candles the filter was not chosen on.'));
   let alive = true;
   let result = null;
 
@@ -41,6 +49,7 @@ export function setupsView(root, { go }) {
         frameBtns,
         h('button.btn', { type: 'submit' }, 'Run'),
       ),
+      filterBox,
       status,
     ),
     h('section.panel', h('h2', 'Paper win rate vs what an account keeps'), modelsBox,
@@ -82,7 +91,7 @@ export function setupsView(root, { go }) {
       try {
         const data = await getLabData(symbol, runFrame);
         if (!alive || runFrame !== frame) return;
-        const lab = runLab(data.bars, LAB_DEFAULTS, data.funding);
+        const lab = runLab(data.bars, { ...LAB_DEFAULTS, filters }, data.funding);
         per.push({ symbol, data, lab });
         status.textContent = `Replayed ${per.length} of ${symbols.length}…`;
       } catch (e) {

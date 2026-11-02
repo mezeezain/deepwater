@@ -193,7 +193,12 @@ For a bigger sample, run on the server:
 ```
 node tools/setups.mjs                 # top 40 pairs, 1h
 node tools/setups.mjs --pairs 80 --tf 4h
+node tools/setups.mjs --compare       # does each quality filter help?
 ```
+
+**Quality filters.** `FILTERS` in `js/setups.js` holds five candidate filters, all **off** by default: trade with the 200-candle trend (sweeps and retests), skip choppy markets (Choppiness Index ≥ 55, for retests and regime flips), a clean sweep candle (wick at most 1 ATR past the level, close in the outer 40%), a stop wide enough that costs stay under 0.12R, and skip setups the top 20% accounts lean against. Try them on the Setups lab page, then run `--compare` on the server: it runs the baseline, each filter alone, and all together on every pair, split into each pair's older 70% and newest 30% of candles, and says whether a filter helps on both. Only filters that help on the unseen part, with 30+ trades, should be switched on (`LAB_DEFAULTS.filters`), which then applies to the Live setups page and Telegram alike.
+
+**Alert hygiene.** Live setups are not announced (in the browser or on Telegram) when price is already more than 0.3R past entry, or when the same pair has an opposite setup live on another timeframe; the page marks such conflicts.
 
 ## Limits
 

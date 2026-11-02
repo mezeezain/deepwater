@@ -39,7 +39,39 @@ export const LAB_DEFAULTS = {
   maxHoldBars: 48,
   whaleGap: 5, // points: whales at least this much more long (short) than the crowd counts as agreeing
   costs: COSTS,
+  // Optional quality filters, all off until tools/setups.mjs --compare shows they help on unseen data.
+  filters: {},
 };
+
+/**
+ * Candidate quality filters (cfg.filters[id] = true to switch one on). Each removes setups that a common
+ * trading rule says are weak; whether they actually improve results is measured, not assumed.
+ */
+export const FILTERS = {
+  trend: { name: 'With the 200-candle trend', about: 'Sweep and retest only in the direction of the 200 EMA (longs above it and rising, shorts below it and falling). Regime flips are trend changes, so they are not filtered.' },
+  chop: { name: 'Not in a choppy market', about: 'Retest and regime setups only when the 14-candle Choppiness Index is under 55 (a trending market); sweeps, which work in ranges, are not filtered.' },
+  sweepCandle: { name: 'Clean sweep candle', about: 'The sweep wick goes at most 1 ATR beyond the level (a reclaim, not a breakdown) and the candle closes in its upper (lower) 40%.' },
+  costs: { name: 'Stop wide enough for costs', about: 'Skip setups whose stop is so tight that a round trip costs more than 0.12R.' },
+  whales: { name: 'Top traders not against', about: 'Skip setups where Binance’s top 20% accounts lean against the trade by 5 points or more versus the crowd.' },
+};
+
+/** Choppiness Index: 100 = sideways, low values = trending. */
+export function choppiness(bars, n = 14) {
+  const out = new Array(bars.length).fill(null);
+  for (let i = n; i < bars.length; i++) {
+    let trSum = 0;
+    let hi = -Infinity;
+    let lo = Infinity;
+    for (let j = i - n + 1; j <= i; j++) {
+      const b = bars[j];
+      trSum += Math.max(b.h - b.l, Math.abs(b.h - bars[j - 1].c), Math.abs(b.l - bars[j - 1].c));
+      hi = Math.max(hi, b.h);
+      lo = Math.min(lo, b.l);
+    }
+    out[i] = hi > lo ? (100 * Math.log10(trSum / (hi - lo))) / Math.log10(n) : null;
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------- indicators
 
@@ -154,6 +186,33 @@ export function findSetups(bars, cfg = LAB_DEFAULTS) {
   const ks = kalmanSlope(bars);
   const mf = mfi(bars, 14);
   const out = [];
+  const F = cfg.filters || {};
+  const e200 = F.trend ? ema(bars.map((b) => b.c), 200) : null;
+  const chop = F.chop ? choppiness(bars, 14) : null;
+  const roundTrip = ((cfg.costs?.taker ?? COSTS.taker) * 2 + (cfg.costs?.stopSlip ?? COSTS.stopSlip));
+  const keep = (s) => {
+    const b = bars[s.i];
+    if (F.trend && s.model !== 'regime') {
+      if (s.i < 210) return false;
+      const rising = e200[s.i] > e200[s.i - 10];
+      if (s.side === 1 ? !(b.c > e200[s.i] && rising) : !(b.c < e200[s.i] && !rising)) return false;
+    }
+    if (F.chop && s.model !== 'sweep' && !(chop[s.i] != null && chop[s.i] < 55)) return false;
+    if (F.sweepCandle && s.model === 'sweep') {
+      const range = b.h - b.l;
+      if (!(range > 0)) return false;
+      const depth = s.side === 1 ? s.level0 - b.l : b.h - s.level0;
+      const closePos = s.side === 1 ? (b.c - b.l) / range : (b.h - b.c) / range;
+      if (depth > a14[s.i] || closePos < 0.6) return false;
+    }
+    if (F.costs) {
+      const entry = s.entryType === 'limit' ? s.level : b.c;
+      const risk = s.entryType === 'limit' ? s.stopAtr : Math.abs(entry - s.stop);
+      if (!(risk > 0) || roundTrip / ((risk / entry) * 100) > 0.12) return false;
+    }
+    if (F.whales && whaleTag(bars, s.i, s.side, cfg).whale === 'against') return false;
+    return true;
+  };
   for (let i = Math.max(W, 20); i < bars.length; i++) {
     const b = bars[i];
     if (a14[i] == null) continue;
@@ -169,8 +228,8 @@ export function findSetups(bars, cfg = LAB_DEFAULTS) {
 
     // Sweep reclaim
     if (rv != null && tb != null && rv >= cfg.rvolSweep) {
-      if (b.l < lo && b.c > lo && tb >= cfg.takerSweep) out.push({ ...base, model: 'sweep', side: 1, entryType: 'market', stop: b.l - 0.5 * a14[i] });
-      else if (b.h > hi && b.c < hi && tb <= 1 - cfg.takerSweep) out.push({ ...base, model: 'sweep', side: -1, entryType: 'market', stop: b.h + 0.5 * a14[i] });
+      if (b.l < lo && b.c > lo && tb >= cfg.takerSweep) out.push({ ...base, model: 'sweep', side: 1, entryType: 'market', stop: b.l - 0.5 * a14[i], level0: lo });
+      else if (b.h > hi && b.c < hi && tb <= 1 - cfg.takerSweep) out.push({ ...base, model: 'sweep', side: -1, entryType: 'market', stop: b.h + 0.5 * a14[i], level0: hi });
     }
 
     // Breakout retest
@@ -186,7 +245,7 @@ export function findSetups(bars, cfg = LAB_DEFAULTS) {
       else if (d === -1 && ks[i] < 0 && mf[i] < 50 && tb < 0.5) out.push({ ...base, model: 'regime', side: -1, entryType: 'market', stop: st.line[i] });
     }
   }
-  return out;
+  return Object.values(F).some(Boolean) ? out.filter(keep) : out;
 }
 
 // ---------------------------------------------------------------- execution

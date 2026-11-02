@@ -73,6 +73,13 @@ export function collectIdeas({ symbols, frames = FRAMES, data, smartFor = () => 
       }
     }
   }
+  // Opposite setups on the same pair at the same time (a 15m short inside a 1h long) contradict each other;
+  // each is marked so neither is announced as if it stood alone.
+  for (const x of all) {
+    if (x.invalid) continue;
+    const other = all.find((y) => y !== x && !y.invalid && y.symbol === x.symbol && y.side !== x.side);
+    if (other) x.conflict = `${other.side > 0 ? 'long' : 'short'} setup also live on ${other.tf}`;
+  }
   const rank = { A: 0, B: 1, C: 2 };
   return all.sort((a, b) => a.invalid - b.invalid || rank[a.ev.grade] - rank[b.ev.grade] || b.ev.score - a.ev.score || b.signalT - a.signalT);
 }
@@ -80,5 +87,9 @@ export function collectIdeas({ symbols, frames = FRAMES, data, smartFor = () => 
 /** Stable identity of a setup: the same signal on later refreshes has the same key. */
 export const ideaKey = (x) => `${x.symbol}|${x.tf}|${x.model}|${x.side}|${x.signalT}`;
 
-/** Whether a setup is worth announcing: new (enter now or limit waiting), still valid, grade in `grades`. */
-export const announceable = (x, grades = ['A', 'B']) => !x.invalid && x.state !== 'running' && grades.includes(x.ev.grade);
+/**
+ * Whether a setup is worth announcing: new (enter now or limit waiting), still valid, grade in `grades`,
+ * not already run away from its entry (chasing), and not contradicted by an opposite setup on the same pair.
+ */
+export const announceable = (x, grades = ['A', 'B']) =>
+  !x.invalid && x.state !== 'running' && grades.includes(x.ev.grade) && x.check?.state !== 'chasing' && !x.conflict;

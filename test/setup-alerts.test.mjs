@@ -82,3 +82,14 @@ test('setup alerts: message escapes text and shows a limit order expiry', () => 
   assert.match(text, /Funding &lt;x&gt;/);
   assert.match(text, /small sample/);
 });
+
+import { announceable } from '../js/setup-feed.js';
+
+test('announceable: skips chasing and conflicting setups', () => {
+  const x = { invalid: false, state: 'enter', ev: { grade: 'A' }, check: { state: 'ok' } };
+  assert.equal(announceable(x), true);
+  assert.equal(announceable({ ...x, check: { state: 'chasing' } }), false, 'already past entry');
+  assert.equal(announceable({ ...x, conflict: 'short setup also live on 15m' }), false);
+  assert.equal(announceable({ ...x, ev: { grade: 'C' } }), false);
+  assert.equal(announceable({ ...x, state: 'running' }), false);
+});

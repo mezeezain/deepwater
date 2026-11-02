@@ -280,6 +280,7 @@ export function ideasView(root, { go }) {
       px != null
         ? h('p.note', `Now ${fmtPrice(px)} (${fmtR(x.check?.moved)} from entry)`, x.check?.note ? h(`strong.${x.check.state === 'stop' || x.check.state === 'chasing' ? 'down' : 'up'}`, ` · ${x.check.note}`) : null)
         : null,
+      x.conflict ? h('p.warn', `Conflicting signals: a ${x.conflict}. Neither is sent as an alert.`) : null,
       h('ul.checks', x.ev.checks.map((c) => h(`li.${c.state}`, h('span.mark', { 'aria-hidden': 'true' }, MARK[c.state]), h('span.check-label', c.label), h('span.check-detail', c.detail)))),
       h('p.note.hist', histLine),
     );

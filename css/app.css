@@ -523,3 +523,6 @@ table.skipped td.reasons, table.skipped th:last-child { white-space: normal; tex
   .theme-toggle { width: 36px; height: 36px; }
   .topbar-inner { gap: 8px; }
 }
+.lab-filters { margin: 10px 0; }
+.lab-filters summary { cursor: pointer; font-size: 14px; }
+.lab-filters .controls { margin: 8px 0; }
