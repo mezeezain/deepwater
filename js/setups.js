@@ -39,8 +39,9 @@ export const LAB_DEFAULTS = {
   maxHoldBars: 48,
   whaleGap: 5, // points: whales at least this much more long (short) than the crowd counts as agreeing
   costs: COSTS,
-  // Optional quality filters, all off until tools/setups.mjs --compare shows they help on unseen data.
-  filters: {},
+  // Quality filters (FILTERS below). Only "costs" is on: in tools/setups.mjs --compare (2 Nov 2026, 40 coins,
+  // 15m/1h/4h) it was the one filter that helped on both the older and the newest candles on every timeframe.
+  filters: { costs: true },
 };
 
 /**

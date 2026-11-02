@@ -57,7 +57,7 @@ export function ideasView(root, { go }) {
         h('div.toolbar-right', notifyBtn, h('button.btn', { type: 'submit' }, 'Update')),
       ),
       statusLine,
-      h('p.note', 'The letter is a count of checks for and against, with the three whale-positioning checks counted as one vote because they move together. It has not been shown to predict results: the measured record of comparable past trades under each setup is the evidence.'),
+      h('p.note', 'The letter counts the checks for and against: the setup’s record on these pairs, its record tested on 40 coins, the bigger timeframe’s trend, funding and costs. A setup that lost money on 40 coins in both the older and the newest candles is always C (currently every sweep reclaim, and regime flips on 1h). Whale and top-trader positioning is shown but not counted: on 40 coins, following it did not improve results. Even A and B setups lose often.'),
     ),
     ideasBox,
     h('section.panel', h('h2', 'Where the next setups would trigger'), watchBox,

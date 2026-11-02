@@ -87,11 +87,24 @@ test('evidence: the same funding rate is judged per 8 hours, so an hourly pair i
   assert.equal(state(hourly(0.0001)), 'bad', '0.01% every hour is 0.08% per 8h: a real cost');
 });
 
-test('evidence: the three positioning checks count as one vote', () => {
+test('evidence: positioning checks are shown but not counted in the grade', () => {
   const bars = [...flat(40), sweepBar(40 * H)];
   const idea = activeIdeas(bars).find((x) => x.model === 'sweep');
   const ev = evidence(idea, { bars, trades: [], smart: { longShare: 0.8 }, funding: null });
   const pos = ev.checks.filter((c) => ['whales', 'trend', 'smart'].includes(c.id) && c.state === 'good').length;
   assert.ok(pos >= 2, 'several positioning checks are good');
-  assert.ok(ev.good <= ev.checks.filter((c) => c.state === 'good').length - (pos - 1), 'but they add one vote');
+  assert.equal(ev.good, ev.checks.filter((c) => c.state === 'good' && !['whales', 'trend', 'smart'].includes(c.id)).length, 'and add no vote');
+});
+
+test('evidence: the 40-coin tested record forces grade C for a setup that lost money on both halves', () => {
+  const bars = [...flat(40), sweepBar(40 * H)];
+  const idea = activeIdeas(bars).find((x) => x.model === 'sweep');
+  const good = (n) => Array.from({ length: n }, () => ({ model: 'sweep', side: 1, netR: 0.5, netPct: 0.6, paper: 'win', exitKind: 'target', feeR: 0.1, riskPct: 1.2 }));
+  const ctx = { bars, trades: good(20), pooled: good(30), higherBars: null, smart: null, funding: [{ t: 0, rate: -0.0001 }] };
+  assert.ok(['A', 'B'].includes(evidence(idea, ctx).grade), 'without a timeframe there is no tested check');
+  const ev = evidence(idea, { ...ctx, frame: '4h' });
+  assert.equal(ev.checks.find((c) => c.id === 'tested').state, 'bad');
+  assert.equal(ev.grade, 'C', 'sweeps lost money on 40 coins');
+  const retest = evidence({ ...idea, model: 'retest' }, { ...ctx, trades: [], pooled: [], frame: '15m' });
+  assert.equal(retest.checks.find((c) => c.id === 'tested').state, 'good');
 });

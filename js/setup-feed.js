@@ -67,6 +67,7 @@ export function collectIdeas({ symbols, frames = FRAMES, data, smartFor = () => 
           higherFrame: HIGHER[tf],
           smart: smartFor(symbol),
           funding: d.funding,
+          frame: tf,
         }, cfg);
         const check = priceCheck(idea, priceFor(symbol));
         all.push({ ...idea, symbol, tf, ev, hist: comparable(idea, ev.whale, pooled), check, invalid: check?.state === 'stop' || check?.state === 'target' });

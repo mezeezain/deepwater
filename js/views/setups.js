@@ -15,9 +15,9 @@ const fmtPf = (v) => (v == null ? '–' : v.toFixed(2));
 export function setupsView(root, { go }) {
   let frame = store.get('lab-frame', '1h');
   let pairs = store.get('lab-pairs', 'BTC, ETH, SOL');
-  let filters = store.get('lab-filters', {});
+  let filters = store.get('lab-filters', LAB_DEFAULTS.filters);
   const filterBox = h('details.lab-filters',
-    h('summary', 'Quality filters (try them here; the live setups use none until they are shown to help)'),
+    h('summary', 'Quality filters (the live setups use “Stop wide enough for costs”, the one shown to help on 40 coins; try the others here)'),
     h('div.controls', ...Object.entries(FILTERS).map(([id, f]) =>
       h('label.check', { title: f.about },
         h('input', { type: 'checkbox', id: `lab-f-${id}`, checked: !!filters[id], onchange: (e) => { filters = { ...filters, [id]: e.target.checked }; store.set('lab-filters', filters); run(); } }),

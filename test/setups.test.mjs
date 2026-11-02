@@ -112,8 +112,9 @@ import { choppiness, FILTERS } from '../js/setups.js';
 const withFilters = (filters) => ({ ...LAB_DEFAULTS, filters });
 const sweepAt = (t, p = 100) => ({ t, o: p, h: p + 0.3, l: p - 2, c: p + 0.1, v: 2000, takerBuy: 1200 });
 
-test('filters: off by default, so existing results are unchanged', () => {
-  const bars = [...flat(40), sweepAt(40 * H)];
+test('filters: only the costs filter is on by default', () => {
+  assert.deepEqual(LAB_DEFAULTS.filters, { costs: true });
+  const bars = [...flat(40), sweepAt(40 * H)]; // a wide stop: costs don't matter, so the result is unchanged
   assert.deepEqual(findSetups(bars), findSetups(bars, withFilters({})));
   assert.deepEqual(Object.keys(FILTERS).sort(), ['chop', 'costs', 'sweepCandle', 'trend', 'whales']);
 });
@@ -146,7 +147,7 @@ test('filters: costs drops setups with a stop too tight for fees', () => {
   // Tiny ranges: ATR 0.02 on a 100 price, so the stop is about 0.03% away and fees eat most of 1R.
   const tight = Array.from({ length: 40 }, (_, i) => ({ t: i * H, o: 100, h: 100.01, l: 99.99, c: 100, v: 1000, takerBuy: 500 }));
   tight.push({ t: 40 * H, o: 100, h: 100.005, l: 99.98, c: 100.002, v: 2000, takerBuy: 1200 });
-  assert.equal(findSetups(tight).filter((s) => s.model === 'sweep').length, 1);
+  assert.equal(findSetups(tight, withFilters({})).filter((s) => s.model === 'sweep').length, 1);
   assert.equal(findSetups(tight, withFilters({ costs: true })).filter((s) => s.model === 'sweep').length, 0);
 });
 

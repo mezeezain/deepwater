@@ -1,6 +1,7 @@
 // Live setups: turns the Setups lab engine into current trade plans with exact levels, an evidence
 // checklist and the historical record of comparable trades. Pure functions, shared by browser and Node.
 import { MODELS, LAB_DEFAULTS, COSTS, findSetups, whaleTag, superTrend, summarizeTrades } from './setups.js';
+import { TESTED, testedVerdict } from './setup-record.js';
 
 export const HIGHER = { '15m': '1h', '1h': '4h', '4h': '4h' };
 const MARKET_VALID_BARS = 2; // a market setup is actionable on the candle after the signal, and one more at most
@@ -88,7 +89,8 @@ export function activeIdeas(bars, cfg = LAB_DEFAULTS, ms = 3_600_000) {
 
 /**
  * Evidence for one idea. Each check: { id, label, state: 'good' | 'bad' | 'neutral', detail }.
- * ctx: { bars, trades (this pair+timeframe, from runLab), pooled (same timeframe, all loaded pairs), higherBars, smart (Smart Money summary or null), funding }
+ * ctx: { bars, trades (this pair+timeframe, from runLab), pooled (same timeframe, all loaded pairs), higherBars, smart (Smart Money summary or null), funding,
+ *        frame (this timeframe, for the 40-coin tested record) }
  */
 export function evidence(idea, ctx, cfg = LAB_DEFAULTS) {
   const side = idea.side;
@@ -109,6 +111,18 @@ export function evidence(idea, ctx, cfg = LAB_DEFAULTS) {
       : 'no past trades in the loaded history',
     stats: rec,
   });
+
+  // 1b. The same setup tested on 40 coins (js/setup-record.js): a much bigger sample than the loaded pairs.
+  if (ctx.frame) {
+    const v = testedVerdict(idea.model, ctx.frame);
+    const fmt = (x) => `${fmtR(x.expR)} over ${x.n}`;
+    checks.push({
+      id: 'tested',
+      label: `Tested on ${TESTED.pairs} coins`,
+      state: v.state,
+      detail: v.r ? `older candles ${fmt(v.r.seen)}, newest ${fmt(v.r.unseen)} per trade after costs` : 'not tested on this timeframe',
+    });
+  }
 
   // 2. Top 20% accounts vs the crowd at the signal candle
   const w = whaleTag(ctx.bars, idea.i, side, cfg);
@@ -177,15 +191,16 @@ export function evidence(idea, ctx, cfg = LAB_DEFAULTS) {
   });
 
   // Top-20% lean, its trend and Smart Money all read the same thing (how big accounts are positioned) and move
-  // together, so together they count as one vote, not three.
+  // together, so together they would count as one vote. They are shown but no longer counted: on 40 coins and
+  // three timeframes, skipping setups the top 20% leaned against made results worse, not better
+  // (tools/setups.mjs --compare, 2 Nov 2026), so their lean has not earned a vote.
   const POSITIONING = new Set(['whales', 'trend', 'smart']);
-  const vote = (c) => (c.state === 'good' ? 1 : c.state === 'bad' ? -1 : 0);
-  const posVote = Math.max(-1, Math.min(1, checks.filter((c) => POSITIONING.has(c.id)).reduce((n, c) => n + vote(c), 0)));
   const independent = checks.filter((c) => !POSITIONING.has(c.id));
-  const good = independent.filter((c) => c.state === 'good').length + (posVote > 0 ? 1 : 0);
-  const bad = independent.filter((c) => c.state === 'bad').length + (posVote < 0 ? 1 : 0);
+  const good = independent.filter((c) => c.state === 'good').length;
+  const bad = independent.filter((c) => c.state === 'bad').length;
   const score = good - bad;
-  const recordBad = checks[0].state === 'bad';
+  // A setup that lost money in its own record, or across 40 coins on both halves of history, is never A or B.
+  const recordBad = checks[0].state === 'bad' || checks.some((c) => c.id === 'tested' && c.state === 'bad');
   const grade = score >= 3 && !recordBad ? 'A' : score >= 1 && !recordBad ? 'B' : 'C';
   return { checks, good, bad, score, grade, whale: w.whale };
 }
