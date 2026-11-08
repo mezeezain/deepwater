@@ -102,7 +102,7 @@ const top = (await get('/fapi/v1/ticker/24hr'))
   .slice(0, PAIRS)
   .map((t) => t.symbol);
 
-const fresh = [], late = [], every = [], highs = [];
+const fresh = [], late = [], every = [], highs = [], everyLong = [];
 const coins = new Map(); // symbol -> { bars, ind, at: Map(t -> index) } for the cross-coin momentum test
 let cutT = new Map();
 for (const [n, symbol] of top.entries()) {
@@ -137,6 +137,8 @@ for (const [n, symbol] of top.entries()) {
     if (side && i % 6 === 0) {
       const o = outcome(bars, i, side, ind.atr[i]);
       if (o) every.push({ symbol, t: bars[i].t, side, ...o });
+      const ol = outcome(bars, i, 1, ind.atr[i]);
+      if (ol) everyLong.push({ symbol, t: bars[i].t, side: 1, ...ol }); // buy anything: the market's own drift
     }
     const tr = trendAt(bars, i, TREND, ind);
     if (!tr) continue;
@@ -231,15 +233,30 @@ show('C, older 70%', ms);
 show('C, newest 30%', mu);
 show('C, longs (top 10%)', momentum.filter((x) => x.side > 0));
 show('C, shorts (bottom 10%)', momentum.filter((x) => x.side < 0));
+const cl = momentum.filter((x) => x.side > 0);
+const [cls, clu] = split(cl);
+show('C longs, older 70%', cls);
+show('C longs, newest 30%', clu);
+const [ls, lu] = split(everyLong);
+show('Buy any coin, any candle', everyLong);
+show('Buy any coin, older 70%', ls);
+show('Buy any coin, newest 30%', lu);
 
-const beats = (a, b, c, d) => {
+// Stricter than before: the edge must beat the noise on BOTH halves, not just be positive.
+const beats = (a, b, c, d, what) => {
   const [A, B, C, D] = [a, b, c, d].map(summary);
-  if ((B.n ?? 0) < 50) return 'too few cases on the newest 30%';
+  if ((A.n ?? 0) < 50 || (B.n ?? 0) < 50) return 'too few cases';
   const e1 = A[12].mean - C[12].mean, e2 = B[12].mean - D[12].mean;
-  return e1 > 0 && e2 > 0 && e2 > B[12].se ? `beats any-candle trend following on both halves (+12 candles: ${pct(e1).trim()} older, ${pct(e2).trim()} newest)` : e2 > 0 ? 'better on the newest 30% only or within noise: not consistent' : 'does not beat any-candle trend following';
+  const ok1 = e1 > 2 * A[12].se, ok2 = e2 > 2 * B[12].se;
+  const nums = `+12 candles: ${pct(e1).trim()} older (noise ±${(2 * A[12].se).toFixed(2)}%), ${pct(e2).trim()} newest (±${(2 * B[12].se).toFixed(2)}%)`;
+  return ok1 && ok2 ? `beats ${what} on both halves, beyond noise (${nums})` : `does not clearly beat ${what} (${nums})`;
 };
-result.variants = { B: beats(hs, hu, es, eu), C: beats(ms, mu, es, eu) };
-console.log(`\nB: ${result.variants.B}\nC: ${result.variants.C}`);
+result.variants = {
+  B: beats(hs, hu, es, eu, 'any-candle trend following'),
+  C: beats(ms, mu, es, eu, 'any-candle trend following'),
+  Clong: beats(cls, clu, ls, lu, 'buying any coin'),
+};
+console.log(`\nB: ${result.variants.B}\nC: ${result.variants.C}\nC longs only: ${result.variants.Clong}`);
 
 // Verdict on the main question: do fresh trends beat trading any candle in the EMA direction, on both halves?
 const edge = (a, b) => (a.n && b.n ? a[12].mean - b[12].mean : null);
