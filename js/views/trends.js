@@ -65,7 +65,7 @@ export function trendsView(root, { go }) {
       h('div.hero-text',
         h('p.eyebrow', 'Fresh trends · support and resistance'),
         h('h1', 'Trend radar'),
-        h('p.lede', `Coins whose trend started in the last ${TREND.maxAge} candles: EMA 20 crossed EMA 50, price broke out of its previous 20-candle range, and ADX is rising. Each row shows the nearest support and resistance and whether price has room to run or is pressing into a level.`),
+        h('p.lede', `A map of what is moving, not a signal: in a test on 60 coins, trends found this way did not keep going more often than chance. Coins whose trend started in the last ${TREND.maxAge} candles: EMA 20 crossed EMA 50, price broke out of its previous 20-candle range, and ADX is rising. Each row shows the nearest support and resistance and whether price has room to run or is pressing into a level.`),
       ),
     ),
     sourceLine,
@@ -81,8 +81,8 @@ export function trendsView(root, { go }) {
           h('li', h('strong', 'Started: '), 'candles since the trend began (the later of the EMA cross and the breakout).'),
           h('li', h('strong', 'Move: '), 'price change since then. A big move in few candles is often already priced in.'),
           h('li', h('strong', 'ADX: '), 'trend strength; it lags, so a young trend often shows a low but rising value.'),
-          h('li', h('strong', 'From EMA 20: '), `distance in ATRs. Over ${TREND.extendedAtr} is “stretched”: price tends to pause or pull back before going further.`),
-          h('li', h('strong', 'Where: '), '“Room to run” and “pullback to a level” are the classic places to look; “pressing into a level” means the trend is meeting a ceiling (or floor) right now.')))),
+          h('li', h('strong', 'From EMA 20: '), `distance in ATRs; over ${TREND.extendedAtr} is marked “stretched”. In the test on 60 coins, stretched trends did not do worse than the rest, so treat it as a description, not a warning.`),
+          h('li', h('strong', 'Where: '), 'whether a level is close (within 1 ATR) behind or ahead of price. Most young trends sit near some level, and in the test being near support or resistance made no measurable difference.')))),
   );
 
   const persist = () => store.set('radar', opts);
@@ -191,7 +191,8 @@ export function trendsView(root, { go }) {
           line('Radar (fresh trends)', g['Fresh trends (radar)']),
           line('Late trends', g['Late trends (same rules, older)']),
           line('Any candle, trend direction', g['Every candle, EMA direction']),
-          line('Radar, room to run', g['open (no level ahead)']),
+          line('Radar, above/below every level', g['  open (no level ahead)']),
+          line('Radar, room both ways', g['  clear (room both ways)']),
           line('Radar, near support', g['  near support']),
           line('Radar, near resistance', g['  near resistance'])))),
       h('p.note', `Measured ${fmtAgo(t.t)} on ${t.pairs} coins, ${opts.tf} candles, after 0.1% costs. 2:1 race: reached +2 ATR before −1 ATR (break-even 33%). Past behaviour, not a promise.`));

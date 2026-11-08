@@ -13,6 +13,9 @@
 // and compares with two baselines:
 //   every candle             trading in the EMA 20/50 direction on any candle (is "fresh" better than "any"?)
 //   late trends              the same rules, but trends older than the fresh window (is fresh better than late?)
+// It also tests two other common definitions of "trending now":
+//   B  the first close at a new 50-candle high (low) in 50 candles, EMA 20/50 agreeing
+//   C  cross-coin momentum: every 24 candles, the top 10% of coins by 120-candle return (long) and bottom 10% (short)
 // Then splits fresh trends by where price was (near support, near resistance, clear, open) and stretched or not,
 // and checks each pair's older 70% against its newest 30%.
 import { writeFileSync, mkdirSync } from 'node:fs';
@@ -99,7 +102,8 @@ const top = (await get('/fapi/v1/ticker/24hr'))
   .slice(0, PAIRS)
   .map((t) => t.symbol);
 
-const fresh = [], late = [], every = [];
+const fresh = [], late = [], every = [], highs = [];
+const coins = new Map(); // symbol -> { bars, ind, at: Map(t -> index) } for the cross-coin momentum test
 let cutT = new Map();
 for (const [n, symbol] of top.entries()) {
   let bars;
@@ -115,6 +119,18 @@ for (const [n, symbol] of top.entries()) {
   }
   cutT.set(symbol, bars[0].t + (bars.at(-1).t - bars[0].t) * 0.7);
   const ind = indicators(bars, TREND);
+  coins.set(symbol, { bars, ind, at: new Map(bars.map((b, i) => [b.t, i])) });
+  // Variant B: first close at a new 50-candle high (low) in 50 candles, with EMA 20/50 agreeing.
+  let lastHigh = -Infinity;
+  for (let i = 100; i < bars.length - HORIZONS.at(-1); i++) {
+    let hi = -Infinity, lo = Infinity;
+    for (let k = i - 50; k < i; k++) { hi = Math.max(hi, bars[k].h); lo = Math.min(lo, bars[k].l); }
+    const side = bars[i].c > hi ? 1 : bars[i].c < lo ? -1 : 0;
+    if (!side || side * (ind.fast[i] - ind.slow[i]) <= 0 || i - lastHigh < 50) continue;
+    lastHigh = i;
+    const o = outcome(bars, i, side, ind.atr[i]);
+    if (o) highs.push({ symbol, t: bars[i].t, side, ...o });
+  }
   let lastCross = -1, lastLateCross = -1, count = 0;
   for (let i = TREND.slow + TREND.breakoutN + 5; i < bars.length - HORIZONS.at(-1); i++) {
     const side = Math.sign(ind.fast[i] - ind.slow[i]);
@@ -179,6 +195,51 @@ show('  started 4–8 candles ago', fresh.filter((x) => x.age >= 4 && x.age <= 8
 show('  started 9–12 candles ago', fresh.filter((x) => x.age >= 9));
 show('  uptrends', fresh.filter((x) => x.side > 0));
 show('  downtrends', fresh.filter((x) => x.side < 0));
+
+// Variant C: cross-coin momentum. Every 24 candles, rank all coins by their return over the last 120 candles;
+// go with the top 10% (long) and the bottom 10% (short).
+const momentum = [];
+const times = [...new Set([...coins.values()].flatMap((c) => c.bars.map((b) => b.t)))].sort((a, b) => a - b);
+for (let n = 120; n < times.length; n += 24) {
+  const t = times[n];
+  const ranked = [];
+  for (const [symbol, c] of coins) {
+    const i = c.at.get(t);
+    if (i == null || i < 120 || i + HORIZONS.at(-1) >= c.bars.length) continue;
+    ranked.push({ symbol, c, i, r: c.bars[i].c / c.bars[i - 120].c - 1 });
+  }
+  if (ranked.length < 10) continue;
+  ranked.sort((a, b) => b.r - a.r);
+  const k = Math.max(2, Math.round(ranked.length * 0.1));
+  for (const [list, side] of [[ranked.slice(0, k), 1], [ranked.slice(-k), -1]]) {
+    for (const x of list) {
+      const o = outcome(x.c.bars, x.i, side, x.c.ind.atr[x.i]);
+      if (o) momentum.push({ symbol: x.symbol, t, side, ...o });
+    }
+  }
+}
+
+console.log('\nOther definitions of "trending now", same measurements:');
+header();
+show('B: first new 50-candle high/low', highs);
+const [hs, hu] = split(highs);
+show('B, older 70%', hs);
+show('B, newest 30%', hu);
+show('C: top/bottom 10% by 120-candle return', momentum);
+const [ms, mu] = split(momentum);
+show('C, older 70%', ms);
+show('C, newest 30%', mu);
+show('C, longs (top 10%)', momentum.filter((x) => x.side > 0));
+show('C, shorts (bottom 10%)', momentum.filter((x) => x.side < 0));
+
+const beats = (a, b, c, d) => {
+  const [A, B, C, D] = [a, b, c, d].map(summary);
+  if ((B.n ?? 0) < 50) return 'too few cases on the newest 30%';
+  const e1 = A[12].mean - C[12].mean, e2 = B[12].mean - D[12].mean;
+  return e1 > 0 && e2 > 0 && e2 > B[12].se ? `beats any-candle trend following on both halves (+12 candles: ${pct(e1).trim()} older, ${pct(e2).trim()} newest)` : e2 > 0 ? 'better on the newest 30% only or within noise: not consistent' : 'does not beat any-candle trend following';
+};
+result.variants = { B: beats(hs, hu, es, eu), C: beats(ms, mu, es, eu) };
+console.log(`\nB: ${result.variants.B}\nC: ${result.variants.C}`);
 
 // Verdict on the main question: do fresh trends beat trading any candle in the EMA direction, on both halves?
 const edge = (a, b) => (a.n && b.n ? a[12].mean - b[12].mean : null);
