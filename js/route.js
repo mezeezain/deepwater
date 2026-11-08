@@ -1,7 +1,7 @@
 // Pure hash parsing, kept separate from the DOM so it can be unit-tested.
 // Routes are bare hash tokens: #whales, #pumps, a pair such as #SOLUSDT, a signal #sig-SOLUSDT-1730000000000,
 // a liquidation map #liqmap-SOLUSDT. An optional query may follow: #SOLUSDT?i=4h
-export const ROUTE_IDS = ['whales', 'pumps', 'charts', 'ideas', 'setups', 'trends', 'liqmap', 'liquidations', 'heatmap', 'funding', 'calculator', 'guide'];
+export const ROUTE_IDS = ['whales', 'pumps', 'charts', 'ideas', 'setups', 'trends', 'fib', 'liqmap', 'liquidations', 'heatmap', 'funding', 'calculator', 'guide'];
 const SYMBOL = /^[A-Z0-9一-鿿]{1,30}USDT$/;
 
 export function safeDecode(s) {

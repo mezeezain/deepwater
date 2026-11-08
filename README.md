@@ -189,6 +189,17 @@ The server (`worker/catcher.mjs`) rescans every coin trading over $5M a day (`TR
 
 **Testing it:** `node tools/trends.mjs` (4h) and `node tools/trends.mjs --tf 1h` replay the radar over the top 60 coins (about 3,000 candles each) and measure what price did next in the trend's direction after costs: +6/+12/+24 candles and a 2:1 race (+2 ATR before −1 ATR). They compare it with trading any candle in the EMA direction and with late trends, split it by location, ADX and age, and check each coin's older 70% against its newest 30%. The result is saved on the server and shown on the page under "Has it been tested?".
 
+## Fib pullbacks
+
+`#fib` (Markets → Fib pullbacks) lists coins in the **first correction after a pump**, with the Fibonacci retracement levels of the move (`js/fib.js`):
+
+- **Pump:** the highest high of the last 60 candles, made 1–30 candles ago, and the lowest low of the 40 candles before it, at least 15% apart.
+- **Clean:** on the way up price never gave back more than 0.382 of the move so far, so the current pullback is the pump's first.
+- **First correction now:** price is at least 0.236 below the high, has made no new high since, and has not fallen past 0.886 of the move. A new high, or a deeper fall, removes the coin.
+- **Levels:** 0.382, 0.5, 0.618, 0.786; "at level" = within 3% of the move.
+
+It runs on the same candles as the Trend radar (server scan after each 1h/4h close, browser fallback). **Testing it:** `node tools/fib.mjs` (and `--tf 1h`) buys the first touch of each level in every first pullback, stop just under the pump's low, target the pump's high, 48 candles max, and compares Fibonacci levels with other depths (0.30 / 0.44 / 0.56 / 0.70) on each coin's older 70% and newest 30%. The result appears on the page.
+
 ## Setups lab
 
 `js/setups.js` (pure functions) finds three common setups on closed candles and plays each forward like a real account:
@@ -259,7 +270,9 @@ js/setups.js            setups lab: indicators, setups, realistic execution, wha
 tools/setups.mjs        setups lab over many pairs, from a server
 js/ideas.js             live setups: active plans, evidence grade, comparable history, trigger levels (pure functions)
 js/trend.js             Trend radar rules: fresh trend, swing levels, location (pure functions)
-js/trend-scan.js        runs the radar over many coins (server and browser), demo rows
+js/fib.js               Fib pullbacks: pump, first correction, retracement levels (pure functions)
+tools/fib.mjs           tests buying Fibonacci levels in first pullbacks against other depths
+js/trend-scan.js        runs the radar and Fib pullbacks over many coins (server and browser), demo rows
 tools/trends.mjs        tests the Trend radar on Binance history
 js/setup-feed.js        live setups shared by the page and the server: bars from Binance responses, collecting and grading setups
 worker/setup-alerts.mjs posts new grade A/B live setups to Telegram (runs inside worker/catcher.mjs)

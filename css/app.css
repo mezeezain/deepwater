@@ -538,3 +538,11 @@ table.radar tbody tr:hover, table.radar tbody tr:focus-visible { background: var
 .place.warn { background: var(--whale-soft); color: var(--whale); }
 ul.plain { margin: 0; padding-left: 18px; }
 ul.plain li { margin: 6px 0; }
+/* Fib pullbacks */
+table.fibs td, table.fibs th { white-space: nowrap; }
+table.fibs tbody tr { cursor: pointer; }
+table.fibs tbody tr:hover, table.fibs tbody tr:focus-visible { background: var(--raised); }
+table.fibs td.at-level { font-weight: 650; color: var(--long); background: var(--long-soft); }
+.depth { position: relative; display: inline-block; width: 56px; height: 6px; border-radius: 3px; background: var(--raised); vertical-align: middle; }
+.depth-now { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--accent); }
+.depth-deep { position: absolute; top: -2px; width: 2px; height: 10px; background: var(--fg); }

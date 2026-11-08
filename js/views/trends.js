@@ -1,6 +1,6 @@
 // Trend radar: coins whose trend started recently, with the nearest support and resistance.
 import { get, isDemo, whaleServer } from '../api.js';
-import { scanTrends, demoTrends, validRadarRow, RADAR_FRAMES } from '../trend-scan.js';
+import { scanTrends, demoTrends, validRadarRow, validFibRow, RADAR_FRAMES } from '../trend-scan.js';
 import { createDemoMarket } from '../demo-market.js';
 import { TREND } from '../trend.js';
 import { h, fill, ticker, fmtPrice, fmtPct, fmtUsd, fmtAgo, store, riskNote } from '../util.js';
@@ -206,7 +206,8 @@ export function trendsView(root, { go }) {
   };
 }
 
-async function fetchRadar(tf, onProgress) {
+/** Radar and fib rows for one timeframe: server scan, else demo, else a smaller scan in this browser. */
+export async function fetchRadar(tf, onProgress, { needFib = false } = {}) {
   if (await isDemo()) {
     const names = createDemoMarket().pairs.map((p) => p.symbol);
     return { ...demoTrends(tf, names), source: 'demo' };
@@ -221,8 +222,8 @@ async function fetchRadar(tf, onProgress) {
       if (res.ok) {
         const body = await res.json();
         const f = body.frames?.[tf];
-        if (!body.demo && f && Array.isArray(f.rows)) {
-          return { t: f.t, scanned: f.scanned, rows: f.rows.filter(validRadarRow), source: 'server', minVolume: body.minVolume, tested: body.tested };
+        if (!body.demo && f && Array.isArray(f.rows) && (!needFib || Array.isArray(f.fib))) {
+          return { t: f.t, scanned: f.scanned, rows: f.rows.filter(validRadarRow), fib: Array.isArray(f.fib) ? f.fib.filter(validFibRow) : [], source: 'server', minVolume: body.minVolume, tested: body.tested, fibTested: body.fibTested };
         }
       }
     } catch {

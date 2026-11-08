@@ -12,7 +12,7 @@
 //
 // It also serves the shared signal log, so every device shows the same record:
 //   GET /api/catcher          status and every signal of the last 30 days
-//   GET /api/catcher/trends   Trend radar: coins in a fresh trend on 1h and 4h (TREND_MIN_VOLUME, default $5M a day)
+//   GET /api/catcher/trends   Trend radar and Fib pullbacks on 1h and 4h (TREND_MIN_VOLUME, default $5M a day)
 //   CATCHER_PORT=8788, HOST=127.0.0.1, ALLOW_ORIGIN (comma-separated; default the Deepwater site and localhost:8000), RATE_LIMIT=120 per minute
 import http from 'node:http';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
@@ -178,7 +178,7 @@ async function trendTick() {
       const res = await scanTrends({ get, symbols, tf });
       trends[tf] = res;
       trendSlot[tf] = slot;
-      log(`Trend radar ${tf}: ${res.rows.length} fresh trends among ${res.scanned} coins`);
+      log(`Trend radar ${tf}: ${res.rows.length} fresh trends, ${res.fib.length} first pullbacks among ${res.scanned} coins`);
     }
   } catch (e) {
     log(`Trend radar failed: ${e.message}`);
@@ -189,13 +189,13 @@ async function trendTick() {
 const trendTimer = setInterval(trendTick, 30_000);
 setTimeout(trendTick, 15_000);
 
-/** Results of node tools/trends.mjs, if it has been run on this server. */
-function trendTests() {
+/** Results of node tools/trends.mjs or tools/fib.mjs, if they have been run on this server. */
+function savedTests(name) {
   const out = {};
   for (const tf of Object.keys(RADAR_FRAMES)) {
     try {
-      const r = JSON.parse(readFileSync(fileURLToPath(new URL(`./data/trends-${tf}.json`, import.meta.url)), 'utf8'));
-      out[tf] = { t: r.t, pairs: r.pairs, verdict: r.verdict, groups: r.groups };
+      const r = JSON.parse(readFileSync(fileURLToPath(new URL(`./data/${name}-${tf}.json`, import.meta.url)), 'utf8'));
+      out[tf] = { t: r.t, pairs: r.pairs, verdict: r.verdict, planVerdict: r.planVerdict ?? null, groups: r.groups };
     } catch {}
   }
   return out;
@@ -235,7 +235,7 @@ const server = http.createServer(guardedHandler({
   trustProxy: HOST === '127.0.0.1' || HOST === '::1' || HOST === 'localhost',
   handler(req, res, { url, send }) {
     if (url.pathname === '/api/catcher/trends') {
-      return send(200, { t: Date.now(), demo, minVolume: TREND_MIN_VOLUME, frames: trends, tested: trendTests() });
+      return send(200, { t: Date.now(), demo, minVolume: TREND_MIN_VOLUME, frames: trends, tested: savedTests('trends'), fibTested: savedTests('fib') });
     }
     if (url.pathname === '/api/catcher') {
       return send(200, {

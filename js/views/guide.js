@@ -17,6 +17,7 @@ const TERMS = [
 
 const SCREENS = [
   ['Whales', 'Ranks about 60 pairs by how far whales and the crowd disagree.'],
+  ['Fib pullbacks', 'Coins that pumped at least 15% without correcting and are now in their first pullback, with the 0.382 / 0.5 / 0.618 / 0.786 retracement levels of the move.'],
   ['Trend radar', 'Coins whose trend started in the last 12 candles (EMA 20/50 cross, breakout from the prior 20-candle range, ADX rising), with the nearest support and resistance.'],
   ['Pump catcher', 'First breakouts only (27% off the 24h low, new 40-day high, no earlier pump): active moves, a 30-day alert log, and the pairs filtered out.'],
   ['Live setups', 'Current trade plans with entry, stop, targets and how similar setups did before.'],
