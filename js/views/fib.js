@@ -37,6 +37,7 @@ export function fibView(root, { go }) {
         h('p.eyebrow', 'First correction after a pump · Fibonacci levels'),
         h('h1', 'Fib pullbacks'),
         h('p.lede', `Coins that pumped at least ${FIB.minPump}% in the last ${FIB.maxSinceHigh} candles without correcting on the way up, and are now in their first pullback. Only first corrections: once a coin makes a new high, or falls back past ${FIB.maxRetrace} of the move, it drops off the list.`),
+        h('p.lede', 'Tested on 150 coins: Fibonacci levels did not hold better than any other depth. What did matter was how deep the pullback went: the deeper, the less often the coin got back to its high and the more often it fell through the pump’s low. The “History” column shows those odds for each coin’s depth.'),
       ),
     ),
     sourceLine,
@@ -109,7 +110,7 @@ export function fibView(root, { go }) {
     fill(tableWrap, h('table.grid.fibs',
       h('thead', h('tr',
         th('Coin'), th('Pump', 'Low to high of the pump, and how many candles it took'), th('High', 'When the pump peaked'), th('Pulled back', 'Retracement now (0 = high, 1 = low)'),
-        th('Where'), th('0.382'), th('0.5'), th('0.618'), th('0.786'), th('Pump low', 'Below this, the pump has failed'), th('Volume 24h'))),
+        th('Where'), th('0.382'), th('0.5'), th('0.618'), th('0.786'), th('Pump low', 'Below this, the pump has failed'), th('History', 'In the test, pullbacks this deep: share that went back to the high / share that fell through the pump’s low (within 48 candles)'), th('Volume 24h'))),
       h('tbody', rows.length
         ? rows.map((f) => {
             const lv = (ratio) => {
@@ -128,9 +129,22 @@ export function fibView(root, { go }) {
                 : h('span.place', f.r < FIB.levels[0] ? 'Above 0.382' : `Between levels`)),
               lv(0.382), lv(0.5), lv(0.618), lv(0.786),
               h('td.num.muted', fmtPrice(f.low)),
+              oddsCell(f),
               h('td.num', f.volume24h == null ? '–' : fmtUsd(f.volume24h)));
           })
-        : h('tr', h('td.empty', { colSpan: 11 }, all.length ? 'None at a level right now.' : `No coin is in a first pullback on ${opts.tf} right now.`)))));
+        : h('tr', h('td.empty', { colSpan: 12 }, all.length ? 'None at a level right now.' : `No coin is in a first pullback on ${opts.tf} right now.`)))));
+  }
+
+  /** Measured odds for pullbacks as deep as this one so far (tools/fib.mjs results for this timeframe). */
+  function oddsCell(f) {
+    const g = data.fibTested?.[opts.tf]?.groups;
+    if (!g) return h('td.num.muted', '–');
+    const depths = [0.3, 0.382, 0.44, 0.5, 0.56, 0.618, 0.7, 0.786];
+    const d = depths.reduce((a, b) => (Math.abs(b - f.deepest) < Math.abs(a - f.deepest) ? b : a));
+    const s = g[`${[0.382, 0.5, 0.618, 0.786].includes(d) ? '*' : ' '} ${d.toFixed(3)}`];
+    if (!s?.n) return h('td.num.muted', '–');
+    const cls = s.target >= 0.4 && s.stop <= 0.15 ? 'up' : s.stop >= 0.3 ? 'down' : '';
+    return h(`td.num${cls ? '.' + cls : ''}`, { title: `${s.n} past pullbacks about ${d} deep` }, `${Math.round(s.target * 100)}% ↑ · ${Math.round(s.stop * 100)}% ✕`);
   }
 
   function depthBar(f) {
