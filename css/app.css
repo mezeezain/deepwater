@@ -526,3 +526,15 @@ table.skipped td.reasons, table.skipped th:last-child { white-space: normal; tex
 .lab-filters { margin: 10px 0; }
 .lab-filters summary { cursor: pointer; font-size: 14px; }
 .lab-filters .controls { margin: 8px 0; }
+/* Trend radar */
+table.radar td, table.radar th { white-space: nowrap; }
+table.radar tbody tr { cursor: pointer; }
+table.radar tbody tr:hover, table.radar tbody tr:focus-visible { background: var(--raised); }
+.trend-chip { font: 600 12px/1 var(--font-data); padding: 4px 7px; border-radius: 4px; }
+.trend-chip.up { background: var(--long-soft); color: var(--long); }
+.trend-chip.down { background: var(--short-soft); color: var(--short); }
+.place { font-size: 12.5px; padding: 3px 7px; border-radius: 4px; background: var(--raised); }
+.place.good { background: var(--long-soft); color: var(--long); }
+.place.warn { background: var(--whale-soft); color: var(--whale); }
+ul.plain { margin: 0; padding-left: 18px; }
+ul.plain li { margin: 6px 0; }

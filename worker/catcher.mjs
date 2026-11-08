@@ -11,7 +11,8 @@
 // Live setups on Telegram (see worker/setup-alerts.mjs): SETUP_ALERTS=off, SETUP_PAIRS=BTC,ETH,SOL, SETUP_FRAMES=15m,1h,4h, SETUP_GRADES=A,B
 //
 // It also serves the shared signal log, so every device shows the same record:
-//   GET /api/catcher   status and every signal of the last 30 days
+//   GET /api/catcher          status and every signal of the last 30 days
+//   GET /api/catcher/trends   Trend radar: coins in a fresh trend on 1h and 4h (TREND_MIN_VOLUME, default $5M a day)
 //   CATCHER_PORT=8788, HOST=127.0.0.1, ALLOW_ORIGIN (comma-separated; default the Deepwater site and localhost:8000), RATE_LIMIT=120 per minute
 import http from 'node:http';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
@@ -22,6 +23,7 @@ import { createBinanceSource, REST } from '../js/binance.js';
 import { createDemoMarket } from '../js/demo-market.js';
 import { guardedHandler, parseOrigins } from './http-util.mjs';
 import { startSetupAlerts, parseSetupConfig } from './setup-alerts.mjs';
+import { scanTrends, RADAR_FRAMES } from '../js/trend-scan.js';
 
 const demo = process.argv.includes('--demo');
 const file = process.env.SIGNALS_FILE || fileURLToPath(new URL('./pumps.json', import.meta.url));
@@ -155,6 +157,50 @@ scanner.on('change', () => {
   log(`${scanner.tickers.size} pairs · ${scanner.state} · ${tracking} active · ${scanner.signals.length} alerts in 30 days`);
 });
 
+// ---------------------------------------------------------------- trend radar
+// Every coin trading at least TREND_MIN_VOLUME a day (up to 300), rescanned a few seconds after each 1h and 4h close.
+const TREND_MIN_VOLUME = +(process.env.TREND_MIN_VOLUME || 5e6);
+const trends = {};
+const trendSlot = {};
+let trendBusy = false;
+async function trendTick() {
+  if (demo || trendBusy || !scanner.tickers.size) return;
+  trendBusy = true;
+  try {
+    for (const tf of Object.keys(RADAR_FRAMES)) {
+      const slot = Math.floor((Date.now() - 10_000) / RADAR_FRAMES[tf]);
+      if (trendSlot[tf] === slot) continue;
+      const symbols = [...scanner.tickers.values()]
+        .filter((t) => (t.quoteVolume ?? 0) >= TREND_MIN_VOLUME)
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 300)
+        .map((t) => ({ symbol: t.symbol, volume24h: t.quoteVolume }));
+      const res = await scanTrends({ get, symbols, tf });
+      trends[tf] = res;
+      trendSlot[tf] = slot;
+      log(`Trend radar ${tf}: ${res.rows.length} fresh trends among ${res.scanned} coins`);
+    }
+  } catch (e) {
+    log(`Trend radar failed: ${e.message}`);
+  } finally {
+    trendBusy = false;
+  }
+}
+const trendTimer = setInterval(trendTick, 30_000);
+setTimeout(trendTick, 15_000);
+
+/** Results of node tools/trends.mjs, if it has been run on this server. */
+function trendTests() {
+  const out = {};
+  for (const tf of Object.keys(RADAR_FRAMES)) {
+    try {
+      const r = JSON.parse(readFileSync(fileURLToPath(new URL(`./data/trends-${tf}.json`, import.meta.url)), 'utf8'));
+      out[tf] = { t: r.t, pairs: r.pairs, verdict: r.verdict, groups: r.groups };
+    } catch {}
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- live setups on Telegram
 const setupCfg = parseSetupConfig();
 let stopSetups = () => {};
@@ -175,6 +221,7 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
     scanner.stop();
     stopSetups();
+    clearInterval(trendTimer);
     log('Stopped, signals saved to', file);
     process.exit(0);
   });
@@ -187,6 +234,9 @@ const server = http.createServer(guardedHandler({
   perMinute: RATE_LIMIT,
   trustProxy: HOST === '127.0.0.1' || HOST === '::1' || HOST === 'localhost',
   handler(req, res, { url, send }) {
+    if (url.pathname === '/api/catcher/trends') {
+      return send(200, { t: Date.now(), demo, minVolume: TREND_MIN_VOLUME, frames: trends, tested: trendTests() });
+    }
     if (url.pathname === '/api/catcher') {
       return send(200, {
         version: 2,

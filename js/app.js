@@ -11,6 +11,7 @@ const ROUTES = {
   charts: { label: 'Charts', load: () => import('./views/token.js').then((m) => (root, ctx) => m.tokenView(root, { ...ctx, symbol: store.get('last-pair', 'BTCUSDT') })) },
   ideas: { label: 'Live setups', load: lazy('./views/ideas.js', 'ideasView') },
   setups: { label: 'Setups lab', load: lazy('./views/setups.js', 'setupsView') },
+  trends: { label: 'Trend radar', load: lazy('./views/trends.js', 'trendsView') },
   liqmap: { label: 'Liq map', load: lazy('./views/liqmap.js', 'liqmapView') },
   liquidations: { label: 'Liquidations', load: lazy('./views/liquidations.js', 'liquidationsView') },
   heatmap: { label: 'Heatmap', load: lazy('./views/heatmap.js', 'heatmapView') },
@@ -25,7 +26,7 @@ if (ROUTE_IDS.some((id) => !ROUTES[id])) throw new Error('route table out of syn
 const NAV = [
   { id: 'whales' },
   { group: 'Signals', items: ['pumps', 'ideas', 'setups'] },
-  { group: 'Markets', items: ['charts', 'funding', 'heatmap'] },
+  { group: 'Markets', items: ['trends', 'charts', 'funding', 'heatmap'] },
   { group: 'Risk', items: ['liqmap', 'liquidations', 'calculator'] },
   { id: 'guide' },
 ];

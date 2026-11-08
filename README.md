@@ -174,6 +174,21 @@ These cover:
 - the indicators, the Smart Money parsing and snapshot diffs, and the whale context;
 - the setups lab, live setups, router, validation and server helpers.
 
+## Trend radar
+
+`#trends` (Markets → Trend radar) lists coins whose trend **started recently**, on 1h or 4h candles, with the nearest **support and resistance**. Rules in `js/trend.js`:
+
+1. **Direction:** EMA 20 above EMA 50 and the close above EMA 50 (mirror for downtrends).
+2. **Structure:** a close beyond the highest high (lowest low) of the 20 candles before it, no earlier than 5 candles before the EMA cross: a breakout from the old range, not a wobble inside it.
+3. **Recent:** the trend started at most 12 candles ago (start = the later of the EMA cross and the breakout).
+4. **Strength:** ADX(14) rising over 3 candles with +DI above −DI. No ADX floor by default, because ADX lags: by the time it passes 20 a trend is rarely fresh.
+
+Levels are swing highs and lows (3 candles either side) from the last 200 candles, merged into zones when closer than 0.6 ATR. Each row says whether price has room to run, has pulled back to a level, or is pressing into one (within 1 ATR), and flags trends stretched more than 2.5 ATR past EMA 20.
+
+The server (`worker/catcher.mjs`) rescans every coin trading over $5M a day (`TREND_MIN_VOLUME`) after each 1h and 4h close and serves `/api/catcher/trends`; without the server the page scans the top 60 coins in the browser.
+
+**Testing it:** `node tools/trends.mjs` (4h) and `node tools/trends.mjs --tf 1h` replay the radar over the top 60 coins (about 3,000 candles each) and measure what price did next in the trend's direction after costs: +6/+12/+24 candles and a 2:1 race (+2 ATR before −1 ATR). They compare it with trading any candle in the EMA direction and with late trends, split it by location, ADX and age, and check each coin's older 70% against its newest 30%. The result is saved on the server and shown on the page under "Has it been tested?".
+
 ## Setups lab
 
 `js/setups.js` (pure functions) finds three common setups on closed candles and plays each forward like a real account:
@@ -243,6 +258,9 @@ worker/catcher.mjs      Pump Catcher server: round-the-clock scanning, shared si
 js/setups.js            setups lab: indicators, setups, realistic execution, whale split (pure functions)
 tools/setups.mjs        setups lab over many pairs, from a server
 js/ideas.js             live setups: active plans, evidence grade, comparable history, trigger levels (pure functions)
+js/trend.js             Trend radar rules: fresh trend, swing levels, location (pure functions)
+js/trend-scan.js        runs the radar over many coins (server and browser), demo rows
+tools/trends.mjs        tests the Trend radar on Binance history
 js/setup-feed.js        live setups shared by the page and the server: bars from Binance responses, collecting and grading setups
 worker/setup-alerts.mjs posts new grade A/B live setups to Telegram (runs inside worker/catcher.mjs)
 deploy/setup.sh         one-step VPS setup: both servers, firewall, DuckDNS, HTTPS
