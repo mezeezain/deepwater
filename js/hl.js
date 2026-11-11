@@ -1,0 +1,215 @@
+// Hyperliquid trader analysis: who to look at on the public leaderboard, and how each one trades,
+// worked out from their public fills. Pure functions (no network) so they can be tested; tools/hl-traders.mjs
+// does the fetching.
+
+export const HL = {
+  minEquity: 100_000, // account value, USD
+  minAllTime: 500_000, // all-time profit, USD: one good month is not enough
+  top: 30,
+  days: 30,
+};
+
+const num = (v) => (Number.isFinite(+v) ? +v : 0);
+const sum = (list, f = (x) => x) => list.reduce((s, x) => s + f(x), 0);
+const median = (list) => {
+  if (!list.length) return null;
+  const a = [...list].sort((x, y) => x - y);
+  return a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2;
+};
+
+/** A leaderboard row as plain numbers: { address, name, equity, day, week, month, allTime: { pnl, roi, vlm } }. */
+export function parseRow(row) {
+  const out = { address: String(row?.ethAddress ?? '').toLowerCase(), name: row?.displayName || null, equity: num(row?.accountValue) };
+  for (const [window, p] of row?.windowPerformances ?? []) out[window] = { pnl: num(p?.pnl), roi: num(p?.roi), vlm: num(p?.vlm) };
+  for (const w of ['day', 'week', 'month', 'allTime']) out[w] ??= { pnl: 0, roi: 0, vlm: 0 };
+  return out;
+}
+
+const validAddress = (a) => /^0x[0-9a-f]{40}$/.test(a);
+
+/**
+ * Traders worth studying: a real account, proven over its whole life, and still winning this month and this week.
+ * Sorted by this month's profit (or by month ROI with sort: 'roi').
+ */
+export function pickTraders(rows, cfg = HL) {
+  const { minEquity, minAllTime, top, sort = 'pnl' } = { ...HL, ...cfg };
+  return rows
+    .map(parseRow)
+    .filter((r) => validAddress(r.address) && r.equity >= minEquity && r.allTime.pnl >= minAllTime && r.month.pnl > 0 && r.week.pnl > 0 && r.month.vlm > 0)
+    .sort((a, b) => (sort === 'roi' ? b.month.roi - a.month.roi : b.month.pnl - a.month.pnl))
+    .slice(0, top);
+}
+
+/** A random sample of ordinary accounts of the same size, to compare the picks with later. `rand` is injectable for tests. */
+export function pickControl(rows, exclude, n = 200, cfg = HL, rand = Math.random) {
+  const { minEquity } = { ...HL, ...cfg };
+  const skip = new Set(exclude);
+  const pool = rows.map(parseRow).filter((r) => validAddress(r.address) && r.equity >= minEquity && !skip.has(r.address));
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, n);
+}
+
+const isPerp = (coin) => typeof coin === 'string' && !coin.startsWith('@') && !coin.includes('/');
+
+/**
+ * Round trips from a trader's perp fills: from flat, through any adds and partial exits, back to flat (or a flip).
+ * Each: { coin, side: 1|-1, t0, t1, holdMs, pnl (after fees), entryNotional, retPct, adds, addWith, addAgainst }.
+ * Positions that were already open when the fills begin are skipped: their entry was not seen.
+ */
+export function roundTrips(fills) {
+  const open = new Map();
+  const trips = [];
+  const sorted = fills.filter((f) => isPerp(f.coin)).sort((a, b) => a.time - b.time);
+  for (const f of sorted) {
+    const px = num(f.px), sz = num(f.sz);
+    if (!(px > 0) || !(sz > 0)) continue;
+    const signed = f.side === 'B' ? sz : -sz;
+    const start = num(f.startPosition);
+    const end = start + signed;
+    const eps = 1e-9 * Math.max(Math.abs(start), sz) + 1e-12;
+    const flatBefore = Math.abs(start) < eps, flatAfter = Math.abs(end) < eps;
+    const net = num(f.closedPnl) - num(f.fee);
+    let trip = open.get(f.coin);
+    if (!trip) {
+      // Either a fresh entry, or the tail of a position opened before our window (unknown entry: tracked but not reported).
+      trip = newTrip(f.coin, flatBefore ? Math.sign(signed) : Math.sign(start), f.time, !flatBefore);
+      open.set(f.coin, trip);
+    }
+    trip.pnl += net;
+    const opening = Math.sign(signed) === trip.side;
+    if (opening) addEntry(trip, px, sz);
+    const flipped = !flatBefore && !flatAfter && Math.sign(end) !== Math.sign(start);
+    if (flatAfter || flipped) {
+      trip.t1 = f.time;
+      if (!trip.partial) trips.push(finish(trip));
+      open.delete(f.coin);
+      if (flipped) {
+        const next = newTrip(f.coin, Math.sign(end), f.time, false);
+        addEntry(next, px, Math.abs(end));
+        open.set(f.coin, next);
+      }
+    }
+  }
+  return trips;
+}
+
+function newTrip(coin, side, t0, partial) {
+  return { coin, side, t0, t1: null, pnl: 0, entryNotional: 0, entrySize: 0, adds: 0, addWith: 0, addAgainst: 0, partial };
+}
+
+function addEntry(trip, px, sz) {
+  if (trip.entrySize > 0) {
+    const avg = trip.entryNotional / trip.entrySize;
+    trip.adds++;
+    // Long: buying more below the average entry is adding to a loser; above it, adding to a winner. Mirror for shorts.
+    if ((px - avg) * trip.side < 0) trip.addAgainst++;
+    else if ((px - avg) * trip.side > 0) trip.addWith++;
+  }
+  trip.entryNotional += px * sz;
+  trip.entrySize += sz;
+}
+
+function finish(t) {
+  return {
+    coin: t.coin, side: t.side, t0: t.t0, t1: t.t1, holdMs: t.t1 - t.t0, pnl: t.pnl,
+    entryNotional: t.entryNotional, retPct: t.entryNotional > 0 ? (t.pnl / t.entryNotional) * 100 : 0,
+    adds: t.adds, addWith: t.addWith, addAgainst: t.addAgainst,
+  };
+}
+
+/** Shape of the profit curve from [[t, pnl], ...]: share of steps that rose, and the worst drop as a share of the peak. */
+export function curveStats(history) {
+  const pts = (history ?? []).map(([t, v]) => [t, num(v)]).filter(([t]) => Number.isFinite(t));
+  if (pts.length < 3) return null;
+  let up = 0, moves = 0, peak = pts[0][1], worst = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const d = pts[i][1] - pts[i - 1][1];
+    if (d !== 0) { moves++; if (d > 0) up++; }
+    peak = Math.max(peak, pts[i][1]);
+    worst = Math.max(worst, peak - pts[i][1]);
+  }
+  return { points: pts.length, upShare: moves ? up / moves : null, drawdown: worst, drawdownShare: peak > 0 ? worst / peak : null };
+}
+
+/**
+ * Everything measurable about how one trader trades.
+ * fills: Hyperliquid fill objects. funding: userFunding rows. state: clearinghouseState. capped: the fill history hit
+ * the API's limit, so the window is shorter than asked.
+ */
+export function traderStats({ fills = [], funding = [], state = null, capped = false }) {
+  const all = fills.filter((f) => num(f.px) > 0 && num(f.sz) > 0);
+  const perps = all.filter((f) => isPerp(f.coin));
+  const ntl = (f) => num(f.px) * num(f.sz);
+  const volume = sum(all, ntl), perpVolume = sum(perps, ntl);
+  const times = all.map((f) => f.time);
+  const spanDays = times.length ? Math.max(1, (Math.max(...times) - Math.min(...times)) / 86_400_000) : 0;
+  const trips = roundTrips(perps);
+  const wins = trips.filter((t) => t.pnl > 0), losses = trips.filter((t) => t.pnl <= 0);
+  const grossWin = sum(wins, (t) => t.pnl), grossLoss = -sum(losses, (t) => t.pnl);
+  const avgWinPct = wins.length ? sum(wins, (t) => t.retPct) / wins.length : null;
+  const avgLossPct = losses.length ? sum(losses, (t) => t.retPct) / losses.length : null;
+  const avgWin = wins.length ? grossWin / wins.length : null, avgLoss = losses.length ? grossLoss / losses.length : null;
+  const adds = sum(trips, (t) => t.addWith + t.addAgainst);
+  const byCoin = new Map();
+  for (const f of perps) byCoin.set(f.coin, (byCoin.get(f.coin) ?? 0) + ntl(f));
+  const topCoin = [...byCoin.entries()].sort((a, b) => b[1] - a[1])[0] ?? null;
+  const fees = sum(perps, (f) => num(f.fee));
+  const realized = sum(perps, (f) => num(f.closedPnl)) - fees;
+  const fundingNet = sum(funding, (x) => num(x?.delta?.usdc));
+  const equity = num(state?.marginSummary?.accountValue);
+  const positions = (state?.assetPositions ?? []).filter((p) => num(p?.position?.szi) !== 0);
+  const exposure = sum(positions, (p) => Math.abs(num(p.position.positionValue)));
+  const top3 = sum([...wins].sort((a, b) => b.pnl - a.pnl).slice(0, 3), (t) => t.pnl);
+  const s = {
+    fills: all.length, capped, spanDays, volume,
+    spotShare: volume > 0 ? (volume - perpVolume) / volume : 0,
+    makerShare: perpVolume > 0 ? sum(perps.filter((f) => f.crossed === false), ntl) / perpVolume : null,
+    fillsPerDay: spanDays ? all.length / spanDays : 0,
+    trips: trips.length, tripsPerDay: spanDays ? trips.length / spanDays : 0,
+    winRate: trips.length ? wins.length / trips.length : null,
+    avgWinPct, avgLossPct,
+    payoff: avgWin != null && avgLoss ? avgWin / avgLoss : null,
+    profitFactor: grossLoss > 0 ? grossWin / grossLoss : null,
+    medianHoldMs: median(trips.map((t) => t.holdMs)),
+    longShare: trips.length ? trips.filter((t) => t.side > 0).length / trips.length : null,
+    addAgainstShare: adds ? sum(trips, (t) => t.addAgainst) / adds : null,
+    addsPerTrip: trips.length ? sum(trips, (t) => t.adds) / trips.length : null,
+    top3Share: grossWin > 0 ? top3 / grossWin : null,
+    worstVsAvgWin: avgWin && losses.length ? Math.max(...losses.map((t) => -t.pnl)) / avgWin : null,
+    coins: byCoin.size, topCoin: topCoin ? { coin: topCoin[0], share: topCoin[1] / perpVolume } : null,
+    realized, fees, funding: fundingNet,
+    leverage: equity > 0 ? exposure / equity : null, openPositions: positions.length,
+  };
+  return { ...s, ...styleOf(s) };
+}
+
+const HOUR = 3_600_000;
+
+/** A plain-words label for how the account trades, and whether a retail trader could test the same idea. */
+export function styleOf(s) {
+  const profit = s.realized + s.funding;
+  let style, why, testable = false;
+  if ((s.makerShare ?? 0) >= 0.7 && s.fillsPerDay >= 300) {
+    style = 'Market maker'; why = 'Rests orders on both sides and earns the spread, hundreds of fills a day. Needs speed and fee rebates.';
+  } else if (s.medianHoldMs != null && s.medianHoldMs < 5 * 60_000 && s.tripsPerDay >= 50) {
+    style = 'High-frequency'; why = 'In and out within minutes, dozens of times a day. A bot with low fees, not a pattern to copy by hand.';
+  } else if (s.spotShare >= 0.25 || (s.funding > 0 && profit > 0 && s.funding / profit >= 0.4)) {
+    style = 'Hedged / funding income'; why = 'Much of the money comes from funding payments or from spot traded against perps, not from guessing direction.';
+    testable = true;
+  } else if (s.trips < 10 || (s.top3Share ?? 0) >= 0.7) {
+    style = 'A few big bets'; why = 'Most of the profit is a handful of trades. Too few to tell skill from luck.';
+  } else if ((s.addAgainstShare ?? 0) >= 0.6 && s.addsPerTrip >= 1 && s.winRate >= 0.7 && (s.payoff ?? 9) < 1) {
+    style = 'Averages into losers'; why = 'Buys more as price goes against it and takes small wins. Wins often, then one loss can take back many wins.';
+  } else if (s.addAgainstShare != null && s.addAgainstShare <= 0.4 && s.addsPerTrip >= 1 && (s.payoff ?? 0) >= 1.5) {
+    style = 'Adds to winners'; why = 'Starts small, adds as the trade works, cuts losers early: wins are bigger than losses.';
+    testable = s.medianHoldMs >= HOUR && s.trips >= 20;
+  } else {
+    style = s.medianHoldMs < HOUR ? 'Scalper' : s.medianHoldMs < 24 * HOUR ? 'Day trader' : 'Swing trader';
+    why = s.medianHoldMs < HOUR ? 'Typical trade lasts under an hour.' : s.medianHoldMs < 24 * HOUR ? 'Typical trade lasts hours.' : 'Typical trade lasts days.';
+    testable = s.medianHoldMs >= HOUR && s.trips >= 20;
+  }
+  return { style, why, testable };
+}

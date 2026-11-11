@@ -274,6 +274,8 @@ js/fib.js               Fib pullbacks: pump, first correction, retracement level
 tools/fib.mjs           tests buying Fibonacci levels in first pullbacks against other depths
 js/trend-scan.js        runs the radar and Fib pullbacks over many coins (server and browser), demo rows
 tools/trends.mjs        tests the Trend radar on Binance history
+js/hl.js                Hyperliquid trader analysis: picking traders, round trips from fills, style labels (pure functions)
+tools/hl-traders.mjs    finds proven Hyperliquid traders and describes how each one trades; --check tests them later
 js/setup-feed.js        live setups shared by the page and the server: bars from Binance responses, collecting and grading setups
 worker/setup-alerts.mjs posts new grade A/B live setups to Telegram (runs inside worker/catcher.mjs)
 deploy/setup.sh         one-step VPS setup: both servers, firewall, DuckDNS, HTTPS
@@ -281,6 +283,21 @@ worker/smartmoney.mjs   whale data server: polls Smart Money data, stores snapsh
 test/*.test.mjs         Pump Catcher, indicator, router, validation and server-helper tests (`npm test` or `node --test`)
 .github/workflows/ci.yml   runs the tests and syntax checks on every push
 ```
+
+## How the top Hyperliquid traders trade
+
+Hyperliquid publishes its leaderboard and every fill of every account, so "how do the winners trade?" can be measured instead of guessed. From the server:
+
+```
+node tools/hl-traders.mjs                 # 30 proven traders, their last 30 days (about 4 minutes)
+node tools/hl-traders.mjs --top 50 --days 14
+node tools/hl-traders.mjs --sort roi      # rank by this month's % return instead of dollars
+node tools/hl-traders.mjs --check         # a month later: did those traders keep winning?
+```
+
+It picks accounts over $100k with over $500k all-time profit that are also up this month and this week, downloads each one's fills, rebuilds their trades (flat → adds → flat) and reports: trades a day, typical holding time, win rate, win size against loss size, share of resting orders, whether they add to winners or to losers, funding income, how much of the profit is a few trades, and leverage now. Each account gets a plain label (market maker, high-frequency, hedged / funding income, a few big bets, averages into losers, adds to winners, scalper, day trader, swing trader) and a note on whether a person could test the same idea by hand.
+
+A leaderboard is a list of survivors, so the run also saves 200 random accounts of the same size. `--check` compares both groups from the day they were picked: if the picks do no better than the random accounts, their past profit was not a signal. Results stay in `worker/data/hl-traders-<date>.json`.
 
 ## Moving it into your own app
 
