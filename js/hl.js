@@ -219,13 +219,16 @@ export function styleOf(s) {
     style = 'Market maker'; why = 'Rests orders on both sides and earns the spread, hundreds of fills a day. Needs speed and fee rebates.';
   } else if (s.medianHoldMs != null && s.medianHoldMs < 5 * 60_000 && s.tripsPerDay >= 50) {
     style = 'High-frequency'; why = 'In and out within minutes, dozens of times a day. A bot with low fees, not a pattern to copy by hand.';
-  } else if (s.spotShare >= 0.25 || (s.funding > 0 && (s.fundingShare ?? 0) >= 0.4)) {
-    style = 'Hedged / funding income'; why = s.spotShare >= 0.25
-      ? 'Trades a lot of spot alongside perps, which usually means one is hedging the other.'
-      : 'Funding payments were a large part of the last week\u2019s profit, not just price moves.';
+  } else if (s.spotShare >= 0.5) {
+    style = 'Mostly spot'; why = 'Most of its trading is buying and selling coins outright, not futures. Not measured here.';
+  } else if (s.funding > 0 && (s.fundingShare ?? 0) >= 0.4) {
+    style = 'Funding income'; why = 'Funding payments were a large part of the last week\u2019s profit, not just price moves.';
     testable = true;
-  } else if (s.trips < 10 || (s.top3Share ?? 0) >= 0.7) {
-    style = 'A few big bets'; why = 'Most of the profit is a handful of trades. Too few to tell skill from luck.';
+  } else if (s.trips < 10) {
+    if (s.fills >= 100) { style = 'Position holder'; why = 'Builds and trims positions over days or weeks in many orders and rarely goes flat, so few trades complete. Win rate cannot be measured.'; }
+    else { style = 'Few trades'; why = 'Hardly traded in the period. Nothing to measure.'; }
+  } else if ((s.top3Share ?? 0) >= 0.7) {
+    style = 'A few big bets'; why = 'Most of the winnings are three trades. Too few to tell skill from luck.';
   } else if ((s.addAgainstShare ?? 0) >= 0.6 && s.addsPerTrip >= 1 && s.winRate >= 0.7 && (s.payoff ?? 9) < 1) {
     style = 'Averages into losers'; why = 'Buys more as price goes against it and takes small wins. Wins often, then one loss can take back many wins.';
   } else if (s.addAgainstShare != null && s.addAgainstShare <= 0.4 && s.addsPerTrip >= 1 && (s.payoff ?? 0) >= 1.5) {
@@ -237,4 +240,121 @@ export function styleOf(s) {
     testable = s.medianHoldMs >= HOUR && s.trips >= 20;
   }
   return { style, why, testable };
+}
+
+// ---- Timing: is it when they enter, or which side they are on? ----
+
+/**
+ * Entry decisions from fills: every fill that makes a perp position bigger, merged per coin, side and hour
+ * (a position built with 200 small orders in an hour is one decision). [{ coin, side, t, px, notional }].
+ */
+export function entryEvents(fills, bucketMs = HOUR) {
+  const buckets = new Map();
+  for (const f of fills.filter((x) => isPerp(x.coin)).sort((a, b) => a.time - b.time)) {
+    const px = num(f.px), sz = num(f.sz);
+    if (!(px > 0) || !(sz > 0)) continue;
+    const signed = f.side === 'B' ? sz : -sz;
+    const start = num(f.startPosition), end = start + signed;
+    const eps = 1e-9 * Math.max(Math.abs(start), sz) + 1e-12;
+    let opened = 0; // how much of this fill made the position bigger
+    if (Math.abs(start) < eps || Math.sign(signed) === Math.sign(start)) opened = sz;
+    else if (Math.abs(end) > eps && Math.sign(end) !== Math.sign(start)) opened = Math.abs(end); // a flip: the part past flat
+    if (!(opened > 0)) continue;
+    const side = Math.sign(signed);
+    const key = `${f.coin}|${side}|${Math.floor(f.time / bucketMs)}`;
+    const b = buckets.get(key) ?? { coin: f.coin, side, t: f.time, size: 0, notional: 0 };
+    b.size += opened; b.notional += opened * px;
+    buckets.set(key, b);
+  }
+  return [...buckets.values()].map((b) => ({ coin: b.coin, side: b.side, t: b.t, px: b.notional / b.size, notional: b.notional })).sort((a, b) => a.t - b.t);
+}
+
+/** Index of the hourly candle that contains time t, or -1. bars: [{ t, h, l, c }] sorted by t. */
+function barAt(bars, t, ms = HOUR) {
+  let lo = 0, hi = bars.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (bars[mid].t + ms <= t) lo = mid + 1;
+    else if (bars[mid].t > t) hi = mid - 1;
+    else return mid;
+  }
+  return -1;
+}
+
+/**
+ * What price had done before an entry and what it did after, on hourly candles.
+ * before24: % move over the 24 candles before the entry candle. rangePos: where the entry price sat in the prior
+ * 7 days' range (0 = the low, 1 = the high). fwd: % result in the trade's direction after each horizon (candles),
+ * from the trader's own price. Fields are null where there is not enough history or future.
+ */
+export function eventOutcome(bars, ev, horizons = [24, 72]) {
+  const i = barAt(bars, ev.t);
+  if (i < 0) return null;
+  // The trader's price should sit inside (or right next to) that hour's candle. If it does not, the candles are
+  // for something else (a renamed coin, another venue's listing) and the entry cannot be measured.
+  if (ev.px > bars[i].h * 1.03 || ev.px < bars[i].l * 0.97) return null;
+  const out = { before24: null, rangePos: null, fwd: {} };
+  if (i >= 25) out.before24 = (bars[i - 1].c / bars[i - 25].c - 1) * 100;
+  if (i >= 168) {
+    let hi = -Infinity, lo = Infinity;
+    for (let k = i - 168; k < i; k++) { hi = Math.max(hi, bars[k].h); lo = Math.min(lo, bars[k].l); }
+    if (hi > lo) out.rangePos = Math.min(1, Math.max(0, (ev.px - lo) / (hi - lo)));
+  }
+  for (const n of horizons) out.fwd[n] = i + n < bars.length ? ev.side * (bars[i + n].c / ev.px - 1) * 100 : null;
+  return out;
+}
+
+/** Average % move over `horizon` candles from every candle that opens in [from, to]: what "any hour" earned a long. */
+export function anyHour(bars, from, to, horizon) {
+  let total = 0, n = 0;
+  for (let j = 0; j + horizon < bars.length; j++) {
+    if (bars[j].t < from || bars[j].t > to) continue;
+    total += (bars[j + horizon].c / bars[j].c - 1) * 100;
+    n++;
+  }
+  return n ? total / n : null;
+}
+
+/** Mean, and the noise range (2 standard errors), of a list of numbers. */
+export function meanSe(list) {
+  const n = list.length;
+  if (!n) return { n: 0, mean: null, noise: null };
+  const mean = sum(list) / n;
+  const sd = Math.sqrt(sum(list, (x) => (x - mean) ** 2) / Math.max(1, n - 1));
+  return { n, mean, noise: (2 * sd) / Math.sqrt(n) };
+}
+
+/**
+ * One trader's entries against "the same side at any hour". events: entryEvents(). barsByCoin: Map coin -> bars.
+ * Returns per horizon: their average result, what the same side earned at any hour in their active window,
+ * and the difference (timing) with its noise range; plus how they entered (with or against the last day's move,
+ * and where in the week's range).
+ */
+export function timingStats(events, barsByCoin, horizons = [24, 72]) {
+  if (!events.length) return null;
+  const from = events[0].t, to = events.at(-1).t;
+  const base = new Map();
+  const baseline = (coin, n) => {
+    const k = `${coin}|${n}`;
+    if (!base.has(k)) base.set(k, anyHour(barsByCoin.get(coin), from, to, n));
+    return base.get(k);
+  };
+  const rows = [];
+  for (const ev of events) {
+    const bars = barsByCoin.get(ev.coin);
+    const o = bars ? eventOutcome(bars, ev, horizons) : null;
+    if (o) rows.push({ ev, o });
+  }
+  const out = { entries: rows.length, coins: new Set(rows.map((r) => r.ev.coin)).size, longShare: rows.length ? rows.filter((r) => r.ev.side > 0).length / rows.length : null };
+  const moved = rows.filter((r) => r.o.before24 != null && r.o.before24 !== 0);
+  out.withMove = moved.length ? moved.filter((r) => r.o.before24 * r.ev.side > 0).length / moved.length : null;
+  const pos = (side) => median(rows.filter((r) => r.ev.side === side && r.o.rangePos != null).map((r) => r.o.rangePos));
+  out.longRangePos = pos(1); out.shortRangePos = pos(-1);
+  out.horizons = {};
+  for (const n of horizons) {
+    const got = rows.map((r) => ({ own: r.o.fwd[n], any: baseline(r.ev.coin, n), side: r.ev.side })).filter((x) => x.own != null && x.any != null);
+    const own = meanSe(got.map((x) => x.own)), side = meanSe(got.map((x) => x.side * x.any)), timing = meanSe(got.map((x) => x.own - x.side * x.any));
+    out.horizons[n] = { n: got.length, own: own.mean, side: side.mean, timing: timing.mean, noise: timing.noise, edges: got.map((x) => x.own - x.side * x.any) };
+  }
+  return out;
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRow, pickTraders, pickControl, tooActive, roundTrips, traderStats, styleOf, curveStats } from '../js/hl.js';
+import { parseRow, pickTraders, pickControl, tooActive, roundTrips, traderStats, styleOf, curveStats, entryEvents, eventOutcome, anyHour, meanSe, timingStats } from '../js/hl.js';
 
 const addr = (n) => `0x${String(n).padStart(40, '0')}`;
 const row = (n, equity, week, month, allTime, vlm = 1e6) => ({
@@ -136,11 +136,13 @@ test('styleOf separates the kinds of account', () => {
   assert.equal(style({ makerShare: 0.9, fillsPerDay: 2000 }).style, 'Market maker');
   assert.equal(style({ medianHoldMs: 60_000, tripsPerDay: 200 }).style, 'High-frequency');
   assert.equal(style({ fills: 0 }).style, 'No trades in the period');
-  assert.equal(style({ funding: 900, fundingShare: 0.6 }).style, 'Hedged / funding income');
+  assert.equal(style({ funding: 900, fundingShare: 0.6 }).style, 'Funding income');
   assert.equal(style({ funding: 900, fundingShare: 0.05 }).style, 'Day trader'); // funding small next to the week's profit
   assert.equal(style({ funding: -900, fundingShare: -0.6 }).style, 'Day trader');
-  assert.equal(style({ spotShare: 0.5 }).style, 'Hedged / funding income');
-  assert.equal(style({ trips: 4 }).style, 'A few big bets');
+  assert.equal(style({ spotShare: 0.9 }).style, 'Mostly spot');
+  assert.equal(style({ spotShare: 0.9 }).testable, false);
+  assert.equal(style({ trips: 4 }).style, 'Position holder'); // 500 fills, hardly ever flat
+  assert.equal(style({ trips: 4, fills: 12 }).style, 'Few trades');
   assert.equal(style({ top3Share: 0.9 }).style, 'A few big bets');
   const grid = style({ addAgainstShare: 0.9, addsPerTrip: 3, winRate: 0.9, payoff: 0.3 });
   assert.equal(grid.style, 'Averages into losers');
@@ -158,4 +160,61 @@ test('curveStats reads the share of rising steps and the worst drop', () => {
   assert.equal(c.drawdown, 40);
   assert.equal(c.drawdownShare, 0.25);
   assert.equal(curveStats([[1, '0']]), null);
+});
+
+test('entryEvents merges an hour of small orders into one decision and ignores exits', () => {
+  const ev = entryEvents([
+    fill('BTC', 'B', 100, 1, 0, 10 * H + 1),
+    fill('BTC', 'B', 102, 1, 1, 10 * H + 60_000), // same hour, same side: merged
+    fill('BTC', 'A', 105, 1, 2, 11 * H), // trimming: not an entry
+    fill('BTC', 'B', 104, 2, 1, 14 * H), // a later add: a new decision
+    fill('BTC', 'A', 110, 5, 3, 20 * H), // closes 3 and flips short 2: the short 2 is an entry
+    fill('@107', 'B', 1, 50, 0, 21 * H), // spot
+  ]);
+  assert.equal(ev.length, 3);
+  assert.deepEqual([ev[0].side, ev[0].px, ev[0].notional], [1, 101, 202]);
+  assert.deepEqual([ev[1].side, ev[1].notional, ev[1].t], [1, 208, 14 * H]);
+  assert.deepEqual([ev[2].side, ev[2].notional], [-1, 220]);
+});
+
+// 400 hourly candles: flat at 100 until hour 300, then rising 1 a candle.
+const ramp = Array.from({ length: 400 }, (_, i) => { const c = i < 300 ? 100 : 100 + (i - 299); return { t: i * H, h: c + 0.5, l: c - 0.5, c }; });
+
+test('eventOutcome reads the move before an entry, its place in the week\u2019s range, and the result after', () => {
+  const long = eventOutcome(ramp, { coin: 'X', side: 1, t: 320 * H + 5, px: 121 });
+  assert.ok(Math.abs(long.before24 - (120 / 100 - 1) * 100) < 1e-9); // close of 319 against close of 295
+  assert.equal(long.rangePos, 1); // above the week's high
+  assert.ok(Math.abs(long.fwd[24] - (145 / 121 - 1) * 100) < 1e-9);
+  const short = eventOutcome(ramp, { coin: 'X', side: -1, t: 320 * H, px: 121 });
+  assert.ok(short.fwd[24] < 0);
+  assert.equal(eventOutcome(ramp, { coin: 'X', side: 1, t: 390 * H, px: 190 }).fwd[24], null); // no future yet
+  assert.equal(eventOutcome(ramp, { coin: 'X', side: 1, t: 10 * H, px: 100 }).before24, null); // no history yet
+  assert.equal(eventOutcome(ramp, { coin: 'X', side: 1, t: 999 * H, px: 1 }), null);
+  assert.equal(eventOutcome(ramp, { coin: 'X', side: 1, t: 320 * H, px: 60 }), null); // price nowhere near that hour's candle
+});
+
+test('anyHour and meanSe', () => {
+  assert.equal(anyHour(ramp, 0, 200 * H, 24), 0);
+  assert.ok(anyHour(ramp, 300 * H, 350 * H, 24) > 10);
+  assert.equal(anyHour(ramp, 390 * H, 399 * H, 24), null);
+  const m = meanSe([1, 2, 3]);
+  assert.equal(m.mean, 2);
+  assert.ok(Math.abs(m.noise - 2 / Math.sqrt(3)) < 1e-9);
+});
+
+test('timingStats separates being on the right side from entering at the right hour', () => {
+  const bars = new Map([['X', ramp]]);
+  // Bought every 10 hours all through the rise: right side, no special timing.
+  const steady = [];
+  for (let i = 300; i <= 360; i += 10) steady.push({ coin: 'X', side: 1, t: i * H, px: ramp[i].c, notional: 1 });
+  const s = timingStats(steady, bars);
+  assert.equal(s.entries, 7);
+  assert.equal(s.longShare, 1);
+  assert.ok(s.horizons[24].own > 10 && s.horizons[24].side > 10);
+  assert.ok(Math.abs(s.horizons[24].timing) < 2); // nearly all of it was the side
+  // Bought once just before the rise and once at the very start of the window: timing was the edge.
+  const timed = timingStats([{ coin: 'X', side: 1, t: 200 * H, px: 100, notional: 1 }, { coin: 'X', side: 1, t: 299 * H, px: 100, notional: 1 }], bars);
+  assert.ok(timed.horizons[24].own > timed.horizons[24].side);
+  assert.equal(timingStats([], bars), null);
+  assert.equal(s.withMove, 1); // every buy came after a rising day (the first has a flat day and is not counted)
 });

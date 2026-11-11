@@ -25,6 +25,7 @@
 import { writeFileSync, readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { HL, pickTraders, pickControl, parseRow, tooActive, traderStats, curveStats } from '../js/hl.js';
+import { info, leaderboard, recentFills, windowFills, funding, GAP, PAGE } from './hl-api.mjs';
 
 process.on('uncaughtException', (e) => { console.error(`Stopped: ${e.message}`); process.exit(1); });
 
@@ -42,69 +43,8 @@ const MAX_FILLS = +arg('max-fills', WHALES ? Infinity : HL.maxFillsPerDay);
 const CFG = WHALES
   ? { minEquity: 100_000, maxEquity: Infinity, minAllTime: 500_000, minPrior: -Infinity, sort: SORT }
   : { minEquity: +arg('min-equity', HL.minEquity), maxEquity: +arg('max-equity', HL.maxEquity), minAllTime: +arg('min-alltime', HL.minAllTime), minPrior: +arg('min-prior', HL.minPrior), sort: SORT };
-const API = process.env.HL_API || 'https://api.hyperliquid.xyz/info';
-const BOARD = process.env.HL_LEADERBOARD || 'https://stats-data.hyperliquid.xyz/Mainnet/leaderboard';
 const DATA = fileURLToPath(new URL('../worker/data/', import.meta.url));
-const PAGE = 2000, MAX_PAGES = 6; // the API serves at most 2,000 fills a call and the latest 10,000 per account
-const GAP = +(process.env.HL_GAP_MS ?? 1300); // ms between calls: well inside the public rate limit
 const DAY = 86_400_000;
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-let lastCall = 0;
-async function info(body) {
-  for (let attempt = 0; ; attempt++) {
-    const wait = lastCall + GAP - Date.now();
-    if (wait > 0) await sleep(wait);
-    lastCall = Date.now();
-    const res = await fetch(API, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    if (res.status === 429 && attempt < 5) {
-      await sleep(+(process.env.HL_BACKOFF_MS ?? 15_000) * (attempt + 1));
-      continue;
-    }
-    if (!res.ok) throw new Error(`HTTP ${res.status} for ${body.type}`);
-    return res.json();
-  }
-}
-
-async function leaderboard() {
-  const res = await fetch(BOARD);
-  if (!res.ok) throw new Error(`HTTP ${res.status} for the leaderboard`);
-  const rows = (await res.json())?.leaderboardRows;
-  if (!Array.isArray(rows) || !rows.length) throw new Error('The leaderboard came back empty or in a new shape.');
-  return rows;
-}
-
-/** Fills since `since`, oldest first, following the API's paging rule (next page starts at the last fill's time). */
-async function fills(user, since) {
-  const seen = new Map();
-  let start = since, capped = false;
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const batch = await info({ type: 'userFillsByTime', user, startTime: start, aggregateByTime: true });
-    if (!Array.isArray(batch) || !batch.length) break;
-    const before = seen.size;
-    for (const f of batch) seen.set(`${f.tid}:${f.oid}:${f.time}`, f);
-    const last = Math.max(...batch.map((f) => f.time));
-    if (batch.length < PAGE || seen.size === before) break;
-    if (page === MAX_PAGES - 1) capped = true;
-    start = last;
-  }
-  return { list: [...seen.values()].sort((a, b) => a.time - b.time), capped: capped || seen.size >= 10_000 };
-}
-
-/** Funding payments since `since`. Returns the rows and whether the whole period was read. */
-async function funding(user, since) {
-  const out = [];
-  let start = since, complete = false;
-  for (let page = 0; page < 10; page++) {
-    const batch = await info({ type: 'userFunding', user, startTime: start });
-    if (!Array.isArray(batch) || !batch.length) { complete = true; break; }
-    out.push(...batch);
-    const last = Math.max(...batch.map((x) => x.time));
-    if (batch.length < 500 || last < start) { complete = true; break; }
-    start = last + 1;
-  }
-  return { rows: out, complete };
-}
 
 const usd = (v) => {
   const a = Math.abs(v), s = v < 0 ? '−' : '';
@@ -179,15 +119,10 @@ for (const p of candidates) {
   looked++;
   let stats = null, curve = null, fundingComplete = true;
   try {
-    const recent = await info({ type: 'userFills', user: p.address, aggregateByTime: true });
-    const list = Array.isArray(recent) ? recent : [];
+    const list = await recentFills(p.address);
     if (!list.some((f) => f.time >= since)) { skipped.idle++; continue; }
     if (tooActive(list, MAX_FILLS, PAGE)) { skipped.bots++; continue; }
-    const oldest = Math.min(...list.map((f) => f.time));
-    // One page reaching back past the window is the whole window; otherwise page through it.
-    const f = list.length < PAGE || oldest <= since
-      ? { list: list.filter((x) => x.time >= since).sort((a, b) => a.time - b.time), capped: false }
-      : await fills(p.address, since);
+    const f = await windowFills(p.address, since, list);
     const fund = await funding(p.address, now - HL.fundingDays * DAY);
     fundingComplete = fund.complete;
     const state = await info({ type: 'clearinghouseState', user: p.address });
@@ -207,7 +142,7 @@ for (const p of candidates) {
   console.log(`   Style: ${s.style}${s.testable ? '  [can be tested]' : ''} — ${s.why}`);
   console.log(`   ${s.fills} fills over ${s.spanDays.toFixed(0)} days${s.capped ? ' (history limit reached)' : ''} · ${s.trips} completed trade${s.trips === 1 ? '' : 's'} (${s.tripsPerDay.toFixed(1)}/day) · ${s.coins} coin${s.coins === 1 ? '' : 's'}${s.topCoin ? `, ${pct(s.topCoin.share)} in ${s.topCoin.coin}` : ''} · ${pct(s.makerShare)} resting orders`);
   if (s.trips) {
-    console.log(`   Wins ${pct(s.winRate)} · average win ${ret(s.avgWinPct)} / loss ${ret(s.avgLossPct)} · win size ÷ loss size ${s.payoff == null ? '–' : s.payoff.toFixed(2)} · typical hold ${hold(s.medianHoldMs)} · long ${pct(s.longShare)}`);
+    console.log(`   Wins ${pct(s.winRate)} · average win ${ret(s.avgWinPct)} / loss ${ret(s.avgLossPct)} · win size ÷ loss size ${s.payoff == null ? '–' : s.payoff > 50 ? 'over 50' : s.payoff.toFixed(2)} · typical hold ${hold(s.medianHoldMs)} · long ${pct(s.longShare)}`);
     console.log(`   Adds per trade ${s.addsPerTrip.toFixed(1)}${s.addAgainstShare == null ? '' : ` (${pct(s.addAgainstShare)} into losing positions)`} · biggest loss ${s.worstVsAvgWin == null ? '–' : `${s.worstVsAvgWin.toFixed(1)}× an average win`} · top 3 trades = ${pct(s.top3Share)} of winnings`);
   }
   console.log(`   Closed trades ${signed(s.realized)} after ${usd(s.fees)} fees · funding last ${HL.fundingDays} days ${signed(s.funding)}${fundingComplete ? '' : ' (partial)'}${s.fundingShare == null ? '' : ` = ${pct(s.fundingShare)} of the week's profit`}`);
@@ -237,8 +172,9 @@ if (testable.length) {
 } else {
   console.log('\nNone of them trades in a way that can be tested by hand (too fast, too few trades, or hedged).');
 }
-console.log('\nRead this as a description, not a recipe: a leaderboard lists the people it went well for. Run this again');
-console.log('with --check in a month to see whether these traders kept winning against a random sample of accounts.');
+console.log('\nRead this as a description, not a recipe: a leaderboard lists the people it went well for.');
+console.log('Next: node tools/hl-timing.mjs asks whether their entries were well timed or they were simply on the right side.');
+console.log('In a month: node tools/hl-traders.mjs --check asks whether they kept winning against a random sample of accounts.');
 
 const control = pickControl(rows, traders.map((t) => t.address), 200, CFG).map((p) => ({ address: p.address, equity: p.equity, allTime: p.allTime.pnl }));
 mkdirSync(DATA, { recursive: true });

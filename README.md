@@ -276,6 +276,8 @@ js/trend-scan.js        runs the radar and Fib pullbacks over many coins (server
 tools/trends.mjs        tests the Trend radar on Binance history
 js/hl.js                Hyperliquid trader analysis: picking traders, round trips from fills, style labels (pure functions)
 tools/hl-traders.mjs    finds proven Hyperliquid traders and describes how each one trades; --check tests them later
+tools/hl-timing.mjs     were those traders' entries well timed, or were they on the right side? (entries vs the same side at any hour)
+tools/hl-api.mjs        Hyperliquid public API calls shared by the two tools
 js/setup-feed.js        live setups shared by the page and the server: bars from Binance responses, collecting and grading setups
 worker/setup-alerts.mjs posts new grade A/B live setups to Telegram (runs inside worker/catcher.mjs)
 deploy/setup.sh         one-step VPS setup: both servers, firewall, DuckDNS, HTTPS
@@ -298,7 +300,9 @@ node tools/hl-traders.mjs --check         # a month later: did those traders kee
 
 **Who it picks.** Accounts between $20k and $2M with over $200k all-time profit, at least $100k of it made before this month, and in profit this month and this week. It then skips bots (an account whose last 2,000 fills took under 10 days) and accounts with no trades in the period. The first version ranked by this month's dollars (now `--whales`) and, on 11 Nov 2026, returned only $5M–$170M accounts: 9 of 30 were market makers or high-frequency, 12 of 30 had been in the red until that month, and most traded so much that the public history (the last 10,000 fills) covered a single day. Nothing there could be copied by hand, hence the size cap, the "already a winner" rule and the bot screen.
 
-**What it measures.** It rebuilds each trader's trades from their fills (flat → adds → flat) and reports trades a day, typical holding time, win rate, win size against loss size, share of resting orders, whether they add to winners or to losers, last week's funding against last week's profit, how much of the profit is a few trades, and leverage and direction now. Each account gets a plain label (market maker, high-frequency, hedged / funding income, a few big bets, averages into losers, adds to winners, scalper, day trader, swing trader) and a note on whether a person could test the same idea.
+**What it measures.** It rebuilds each trader's trades from their fills (flat → adds → flat) and reports trades a day, typical holding time, win rate, win size against loss size, share of resting orders, whether they add to winners or to losers, last week's funding against last week's profit, how much of the profit is a few trades, and leverage and direction now. Each account gets a plain label (market maker, high-frequency, mostly spot, funding income, position holder, few trades, a few big bets, averages into losers, adds to winners, scalper, day trader, swing trader) and a note on whether a person could test the same idea.
+
+**Side or timing?** `node tools/hl-timing.mjs` (run after the above, about 4 minutes) takes the saved traders' entries (every hour in which they made a futures position bigger) and measures, on hourly candles, what price had done in the 24 hours before, where the entry sat in the week's range, and the result 24 and 72 hours later. It compares that with entering the same side on the same coin at any hour of their active period. The difference is timing; the rest is simply which side they were on. On 11 Nov 2026, 17 of the 20 picked traders with open positions were almost entirely short, which is what picking this month's winners in a falling market would produce by itself.
 
 **The honest test.** A leaderboard is a list of survivors, so the run also saves 200 random accounts of the same size. `--check` compares both groups from the day they were picked: if the picks do no better than the random accounts, their past profit was not a signal. Results stay in `worker/data/hl-traders-<date>.json`.
 
