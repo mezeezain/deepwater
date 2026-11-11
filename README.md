@@ -289,15 +289,18 @@ test/*.test.mjs         Pump Catcher, indicator, router, validation and server-h
 Hyperliquid publishes its leaderboard and every fill of every account, so "how do the winners trade?" can be measured instead of guessed. From the server:
 
 ```
-node tools/hl-traders.mjs                 # 30 proven traders, their last 30 days (about 4 minutes)
-node tools/hl-traders.mjs --top 50 --days 14
-node tools/hl-traders.mjs --sort roi      # rank by this month's % return instead of dollars
+node tools/hl-traders.mjs                 # 30 proven hand-sized traders, their last 60 days (about 8 minutes)
+node tools/hl-traders.mjs --top 50 --days 30
+node tools/hl-traders.mjs --max-equity 500000 --min-alltime 50000   # smaller accounts
+node tools/hl-traders.mjs --whales        # the month's biggest winners instead (funds and market makers)
 node tools/hl-traders.mjs --check         # a month later: did those traders keep winning?
 ```
 
-It picks accounts over $100k with over $500k all-time profit that are also up this month and this week, downloads each one's fills, rebuilds their trades (flat → adds → flat) and reports: trades a day, typical holding time, win rate, win size against loss size, share of resting orders, whether they add to winners or to losers, funding income, how much of the profit is a few trades, and leverage now. Each account gets a plain label (market maker, high-frequency, hedged / funding income, a few big bets, averages into losers, adds to winners, scalper, day trader, swing trader) and a note on whether a person could test the same idea by hand.
+**Who it picks.** Accounts between $20k and $2M with over $200k all-time profit, at least $100k of it made before this month, and in profit this month and this week. It then skips bots (an account whose last 2,000 fills took under 10 days) and accounts with no trades in the period. The first version ranked by this month's dollars (now `--whales`) and, on 11 Nov 2026, returned only $5M–$170M accounts: 9 of 30 were market makers or high-frequency, 12 of 30 had been in the red until that month, and most traded so much that the public history (the last 10,000 fills) covered a single day. Nothing there could be copied by hand, hence the size cap, the "already a winner" rule and the bot screen.
 
-A leaderboard is a list of survivors, so the run also saves 200 random accounts of the same size. `--check` compares both groups from the day they were picked: if the picks do no better than the random accounts, their past profit was not a signal. Results stay in `worker/data/hl-traders-<date>.json`.
+**What it measures.** It rebuilds each trader's trades from their fills (flat → adds → flat) and reports trades a day, typical holding time, win rate, win size against loss size, share of resting orders, whether they add to winners or to losers, last week's funding against last week's profit, how much of the profit is a few trades, and leverage and direction now. Each account gets a plain label (market maker, high-frequency, hedged / funding income, a few big bets, averages into losers, adds to winners, scalper, day trader, swing trader) and a note on whether a person could test the same idea.
+
+**The honest test.** A leaderboard is a list of survivors, so the run also saves 200 random accounts of the same size. `--check` compares both groups from the day they were picked: if the picks do no better than the random accounts, their past profit was not a signal. Results stay in `worker/data/hl-traders-<date>.json`.
 
 ## Moving it into your own app
 

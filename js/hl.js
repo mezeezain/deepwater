@@ -3,10 +3,15 @@
 // does the fetching.
 
 export const HL = {
-  minEquity: 100_000, // account value, USD
-  minAllTime: 500_000, // all-time profit, USD: one good month is not enough
-  top: 30,
-  days: 30,
+  minEquity: 20_000, // account value, USD
+  maxEquity: 2_000_000, // above this it is funds and firms, not people trading by hand
+  minAllTime: 200_000, // all-time profit, USD
+  minPrior: 100_000, // profit already banked before this month: one good month is not a record
+  top: 30, // traders to analyse
+  scan: 150, // candidates to look through to find them
+  days: 60, // how far back to read trades
+  maxFillsPerDay: 200, // busier than this is a bot
+  fundingDays: 7, // funding is read for the last week and set against the week's profit
 };
 
 const num = (v) => (Number.isFinite(+v) ? +v : 0);
@@ -28,23 +33,36 @@ export function parseRow(row) {
 const validAddress = (a) => /^0x[0-9a-f]{40}$/.test(a);
 
 /**
- * Traders worth studying: a real account, proven over its whole life, and still winning this month and this week.
- * Sorted by this month's profit (or by month ROI with sort: 'roi').
+ * Traders worth studying: a hand-sized account, already well in profit before this month, and still winning this
+ * month and this week. Sorted by all-time profit (sort: 'pnl' for this month's profit, 'roi' for this month's %).
  */
 export function pickTraders(rows, cfg = HL) {
-  const { minEquity, minAllTime, top, sort = 'pnl' } = { ...HL, ...cfg };
+  const { minEquity, maxEquity, minAllTime, minPrior, top, sort = 'alltime' } = { ...HL, ...cfg };
+  const key = sort === 'roi' ? (r) => r.month.roi : sort === 'pnl' ? (r) => r.month.pnl : (r) => r.allTime.pnl;
   return rows
     .map(parseRow)
-    .filter((r) => validAddress(r.address) && r.equity >= minEquity && r.allTime.pnl >= minAllTime && r.month.pnl > 0 && r.week.pnl > 0 && r.month.vlm > 0)
-    .sort((a, b) => (sort === 'roi' ? b.month.roi - a.month.roi : b.month.pnl - a.month.pnl))
+    .filter((r) => validAddress(r.address) && r.equity >= minEquity && r.equity <= maxEquity && r.allTime.pnl >= minAllTime &&
+      r.allTime.pnl - r.month.pnl >= minPrior && r.month.pnl > 0 && r.week.pnl > 0 && r.month.vlm > 0)
+    .sort((a, b) => key(b) - key(a))
     .slice(0, top);
+}
+
+/**
+ * Is this account too busy to be a person? Judged from one page of its most recent fills: a full page
+ * (pageSize fills) that spans fewer days than a person could fill it in.
+ */
+export function tooActive(fills, maxPerDay = HL.maxFillsPerDay, pageSize = 2000) {
+  if (fills.length < pageSize) return false;
+  const times = fills.map((f) => f.time);
+  const days = (Math.max(...times) - Math.min(...times)) / 86_400_000;
+  return fills.length / Math.max(days, 1e-6) > maxPerDay;
 }
 
 /** A random sample of ordinary accounts of the same size, to compare the picks with later. `rand` is injectable for tests. */
 export function pickControl(rows, exclude, n = 200, cfg = HL, rand = Math.random) {
-  const { minEquity } = { ...HL, ...cfg };
+  const { minEquity, maxEquity } = { ...HL, ...cfg };
   const skip = new Set(exclude);
-  const pool = rows.map(parseRow).filter((r) => validAddress(r.address) && r.equity >= minEquity && !skip.has(r.address));
+  const pool = rows.map(parseRow).filter((r) => validAddress(r.address) && r.equity >= minEquity && r.equity <= maxEquity && !skip.has(r.address));
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(rand() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
@@ -136,10 +154,11 @@ export function curveStats(history) {
 
 /**
  * Everything measurable about how one trader trades.
- * fills: Hyperliquid fill objects. funding: userFunding rows. state: clearinghouseState. capped: the fill history hit
- * the API's limit, so the window is shorter than asked.
+ * fills: Hyperliquid fill objects. funding: userFunding rows for the last week, weekPnl: the leaderboard's profit
+ * for the same week (so funding is compared with profit over the same days). state: clearinghouseState.
+ * capped: the fill history hit the API's limit, so the window is shorter than asked.
  */
-export function traderStats({ fills = [], funding = [], state = null, capped = false }) {
+export function traderStats({ fills = [], funding = [], weekPnl = null, state = null, capped = false }) {
   const all = fills.filter((f) => num(f.px) > 0 && num(f.sz) > 0);
   const perps = all.filter((f) => isPerp(f.coin));
   const ntl = (f) => num(f.px) * num(f.sz);
@@ -162,6 +181,7 @@ export function traderStats({ fills = [], funding = [], state = null, capped = f
   const equity = num(state?.marginSummary?.accountValue);
   const positions = (state?.assetPositions ?? []).filter((p) => num(p?.position?.szi) !== 0);
   const exposure = sum(positions, (p) => Math.abs(num(p.position.positionValue)));
+  const longExposure = sum(positions.filter((p) => num(p.position.szi) > 0), (p) => Math.abs(num(p.position.positionValue)));
   const top3 = sum([...wins].sort((a, b) => b.pnl - a.pnl).slice(0, 3), (t) => t.pnl);
   const s = {
     fills: all.length, capped, spanDays, volume,
@@ -181,7 +201,9 @@ export function traderStats({ fills = [], funding = [], state = null, capped = f
     worstVsAvgWin: avgWin && losses.length ? Math.max(...losses.map((t) => -t.pnl)) / avgWin : null,
     coins: byCoin.size, topCoin: topCoin ? { coin: topCoin[0], share: topCoin[1] / perpVolume } : null,
     realized, fees, funding: fundingNet,
+    fundingShare: weekPnl > 0 ? fundingNet / weekPnl : null,
     leverage: equity > 0 ? exposure / equity : null, openPositions: positions.length,
+    openLongShare: exposure > 0 ? longExposure / exposure : null,
   };
   return { ...s, ...styleOf(s) };
 }
@@ -190,14 +212,17 @@ const HOUR = 3_600_000;
 
 /** A plain-words label for how the account trades, and whether a retail trader could test the same idea. */
 export function styleOf(s) {
-  const profit = s.realized + s.funding;
   let style, why, testable = false;
-  if ((s.makerShare ?? 0) >= 0.7 && s.fillsPerDay >= 300) {
+  if (!s.fills) {
+    style = 'No trades in the period'; why = 'Profit came from positions or coins it was already holding.';
+  } else if ((s.makerShare ?? 0) >= 0.7 && s.fillsPerDay >= 300) {
     style = 'Market maker'; why = 'Rests orders on both sides and earns the spread, hundreds of fills a day. Needs speed and fee rebates.';
   } else if (s.medianHoldMs != null && s.medianHoldMs < 5 * 60_000 && s.tripsPerDay >= 50) {
     style = 'High-frequency'; why = 'In and out within minutes, dozens of times a day. A bot with low fees, not a pattern to copy by hand.';
-  } else if (s.spotShare >= 0.25 || (s.funding > 0 && profit > 0 && s.funding / profit >= 0.4)) {
-    style = 'Hedged / funding income'; why = 'Much of the money comes from funding payments or from spot traded against perps, not from guessing direction.';
+  } else if (s.spotShare >= 0.25 || (s.funding > 0 && (s.fundingShare ?? 0) >= 0.4)) {
+    style = 'Hedged / funding income'; why = s.spotShare >= 0.25
+      ? 'Trades a lot of spot alongside perps, which usually means one is hedging the other.'
+      : 'Funding payments were a large part of the last week\u2019s profit, not just price moves.';
     testable = true;
   } else if (s.trips < 10 || (s.top3Share ?? 0) >= 0.7) {
     style = 'A few big bets'; why = 'Most of the profit is a handful of trades. Too few to tell skill from luck.';

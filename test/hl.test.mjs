@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRow, pickTraders, pickControl, roundTrips, traderStats, styleOf, curveStats } from '../js/hl.js';
+import { parseRow, pickTraders, pickControl, tooActive, roundTrips, traderStats, styleOf, curveStats } from '../js/hl.js';
 
 const addr = (n) => `0x${String(n).padStart(40, '0')}`;
 const row = (n, equity, week, month, allTime, vlm = 1e6) => ({
@@ -27,25 +27,36 @@ test('parseRow turns the leaderboard strings into numbers', () => {
   assert.equal(r.allTime.pnl, 30);
 });
 
-test('pickTraders wants size, a long record, and a winning month and week', () => {
+test('pickTraders wants a hand-sized account that was already a winner before this month', () => {
   const rows = [
     row(1, 500_000, 10_000, 80_000, 2_000_000), // passes
-    row(2, 50_000, 10_000, 90_000, 2_000_000), // account too small
-    row(3, 500_000, 10_000, 99_000, 100_000), // no long record
+    row(2, 5_000, 10_000, 90_000, 2_000_000), // account too small
+    row(3, 500_000, 10_000, 99_000, 150_000), // all-time profit too small
     row(4, 500_000, -5_000, 99_000, 2_000_000), // losing week
     row(5, 500_000, 10_000, -1, 2_000_000), // losing month
-    row(6, 900_000, 10_000, 120_000, 3_000_000), // passes, bigger month
-    { ethAddress: 'not-an-address', accountValue: '9e9', windowPerformances: row(7, 1, 1, 1, 1).windowPerformances },
+    row(6, 900_000, 10_000, 120_000, 3_000_000), // passes, bigger record
+    row(8, 50_000_000, 10_000, 120_000, 9_000_000), // a fund, not a person
+    row(9, 500_000, 10_000, 400_000, 450_000), // nearly all of it made this month
+    { ethAddress: 'not-an-address', accountValue: '500000', windowPerformances: row(7, 1, 1, 1, 1).windowPerformances },
   ];
   assert.deepEqual(pickTraders(rows).map((r) => r.address), [addr(6), addr(1)]);
   assert.deepEqual(pickTraders(rows, { sort: 'roi' }).map((r) => r.address), [addr(1), addr(6)]);
+  assert.deepEqual(pickTraders(rows, { sort: 'pnl' }).map((r) => r.address), [addr(6), addr(1)]);
   assert.equal(pickTraders(rows, { top: 1 }).length, 1);
+  assert.equal(pickTraders(rows, { maxEquity: 1e9 }).length, 3);
 });
 
 test('pickControl samples same-size accounts and leaves the picks out', () => {
-  const rows = [row(1, 500_000, 1, 1, 1), row(2, 500_000, -1, -1, -1), row(3, 10, 1, 1, 1), row(4, 200_000, 0, 0, 0)];
+  const rows = [row(1, 500_000, 1, 1, 1), row(2, 500_000, -1, -1, -1), row(3, 10, 1, 1, 1), row(4, 200_000, 0, 0, 0), row(5, 9e7, 0, 0, 0)];
   const c = pickControl(rows, [addr(1)], 10, undefined, () => 0.5);
   assert.deepEqual(c.map((r) => r.address).sort(), [addr(2), addr(4)]);
+});
+
+test('tooActive spots a bot from one full page of fills', () => {
+  const page = (n, spanDays) => Array.from({ length: n }, (_, i) => ({ time: (i / (n - 1)) * spanDays * 24 * H }));
+  assert.equal(tooActive(page(2000, 2)), true); // 1,000 fills a day
+  assert.equal(tooActive(page(2000, 40)), false); // 50 a day
+  assert.equal(tooActive(page(300, 0.1)), false); // a short burst, not a full page
 });
 
 test('roundTrips: entry, an add, a partial exit and the close make one trade', () => {
@@ -99,7 +110,8 @@ test('traderStats measures win rate, payoff, maker share, funding and leverage',
   const s = traderStats({
     fills,
     funding: [{ time: 1, delta: { usdc: '-3' } }, { time: 2, delta: { usdc: '1' } }],
-    state: { marginSummary: { accountValue: '1000' }, assetPositions: [{ position: { szi: '2', positionValue: '2500' } }, { position: { szi: '0', positionValue: '0' } }] },
+    weekPnl: 10,
+    state: { marginSummary: { accountValue: '1000' }, assetPositions: [{ position: { szi: '2', positionValue: '2000' } }, { position: { szi: '-1', positionValue: '500' } }, { position: { szi: '0', positionValue: '0' } }] },
   });
   assert.equal(s.trips, 30);
   assert.equal(s.winRate, 0.4);
@@ -109,7 +121,9 @@ test('traderStats measures win rate, payoff, maker share, funding and leverage',
   assert.equal(s.realized, 36);
   assert.equal(s.funding, -2);
   assert.equal(s.leverage, 2.5);
-  assert.equal(s.openPositions, 1);
+  assert.equal(s.openPositions, 2);
+  assert.equal(s.openLongShare, 0.8);
+  assert.equal(s.fundingShare, -0.2);
   assert.ok(Math.abs(s.makerShare - 0.4975) < 0.01);
   assert.equal(s.topCoin.coin, 'BTC');
   assert.equal(s.style, 'Day trader');
@@ -117,11 +131,14 @@ test('traderStats measures win rate, payoff, maker share, funding and leverage',
 });
 
 test('styleOf separates the kinds of account', () => {
-  const base = { makerShare: 0.2, fillsPerDay: 10, medianHoldMs: 6 * H, tripsPerDay: 2, spotShare: 0, funding: 0, realized: 1000, trips: 60, top3Share: 0.2, addAgainstShare: null, addsPerTrip: 0, winRate: 0.5, payoff: 1.2 };
+  const base = { fills: 500, makerShare: 0.2, fillsPerDay: 10, medianHoldMs: 6 * H, tripsPerDay: 2, spotShare: 0, funding: 0, realized: 1000, trips: 60, top3Share: 0.2, addAgainstShare: null, addsPerTrip: 0, winRate: 0.5, payoff: 1.2 };
   const style = (patch) => styleOf({ ...base, ...patch });
   assert.equal(style({ makerShare: 0.9, fillsPerDay: 2000 }).style, 'Market maker');
   assert.equal(style({ medianHoldMs: 60_000, tripsPerDay: 200 }).style, 'High-frequency');
-  assert.equal(style({ funding: 900, realized: 100 }).style, 'Hedged / funding income');
+  assert.equal(style({ fills: 0 }).style, 'No trades in the period');
+  assert.equal(style({ funding: 900, fundingShare: 0.6 }).style, 'Hedged / funding income');
+  assert.equal(style({ funding: 900, fundingShare: 0.05 }).style, 'Day trader'); // funding small next to the week's profit
+  assert.equal(style({ funding: -900, fundingShare: -0.6 }).style, 'Day trader');
   assert.equal(style({ spotShare: 0.5 }).style, 'Hedged / funding income');
   assert.equal(style({ trips: 4 }).style, 'A few big bets');
   assert.equal(style({ top3Share: 0.9 }).style, 'A few big bets');
