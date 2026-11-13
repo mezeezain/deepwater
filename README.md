@@ -278,6 +278,8 @@ js/hl.js                Hyperliquid trader analysis: picking traders, round trip
 tools/hl-traders.mjs    finds proven Hyperliquid traders and describes how each one trades; --check tests them later
 tools/hl-timing.mjs     were those traders' entries well timed, or were they on the right side? (entries vs the same side at any hour)
 tools/hl-api.mjs        Hyperliquid public API calls shared by the two tools
+js/sweep-regime.js      the "4h regime + 1h liquidity sweep" plan as exact rules: regime, trigger, limit fill, two-stage exit (pure functions)
+tools/sol150.mjs        replays that plan on real candles against its claimed results, a no-edge reference and a control
 js/setup-feed.js        live setups shared by the page and the server: bars from Binance responses, collecting and grading setups
 worker/setup-alerts.mjs posts new grade A/B live setups to Telegram (runs inside worker/catcher.mjs)
 deploy/setup.sh         one-step VPS setup: both servers, firewall, DuckDNS, HTTPS
@@ -305,6 +307,15 @@ node tools/hl-traders.mjs --check         # a month later: did those traders kee
 **Side or timing?** `node tools/hl-timing.mjs` (run after the above, about 4 minutes) takes the saved traders' entries (every hour in which they made a futures position bigger) and measures, on hourly candles, what price had done in the 24 hours before, where the entry sat in the week's range, and the result 24 and 72 hours later. It compares that with entering the same side on the same coin at any hour of their active period. The difference is timing; the rest is simply which side they were on. On 11 Nov 2026, 17 of the 20 picked traders with open positions were almost entirely short, which is what picking this month's winners in a falling market would produce by itself.
 
 **The honest test.** A leaderboard is a list of survivors, so the run also saves 200 random accounts of the same size. `--check` compares both groups from the day they were picked: if the picks do no better than the random accounts, their past profit was not a signal. Results stay in `worker/data/hl-traders-<date>.json`.
+
+## Checking a strategy from the internet: the "SOL-150" plan
+
+A plan called "4H Regime + 1H Liquidity Sweep (SOL-150)" arrived with a table of 120 backtested trades ($150 → $295 in six months). The table is arithmetic on assumed win rates, not a replay of candles: it counts 30 "low-ADX chop trades" although the plan's own first rule forbids trading when ADX is under 20. `node tools/sol150.mjs` replays the rules exactly as written (js/sweep-regime.js) on real Binance 1h candles with real funding, and prints them next to the claim and next to what the same exits give with no edge at all (17% both targets, 17% first only, 67% stopped). It also shows how many candles pass each rule, runs the same rules on the 15 busiest other coins, and compares with entering at any hour in the same regime.
+
+```
+node tools/sol150.mjs                    # SOLUSDT, about 560 days, plus the top 15 coins pooled (about 2 minutes)
+node tools/sol150.mjs --symbol ETHUSDT --pairs 0
+```
 
 ## Moving it into your own app
 
